@@ -48,6 +48,13 @@ function computeSettlements(expenses, members){
   return rows
 }
 
+function RootRouter(){
+  const path = window.location.pathname.replace(/\/$/, '')
+  if(path === '/privacy') return <PolicyPage type="privacy" />
+  if(path === '/terms') return <PolicyPage type="terms" />
+  return <AuthGate />
+}
+
 function AuthGate(){
   const [session, setSession] = useState(null)
   const [loading, setLoading] = useState(Boolean(supabase))
@@ -107,10 +114,47 @@ function AuthGate(){
   }
 
   if(!session){
-    return <div className="page"><main className="phone"><section className="screen authScreen"><div className="authCard"><img src="/logo-mark.png" alt="Travelvault"/><h1>Travelvault</h1><p>Alt fra turen samlet på ett sted.</p><label className="field"><span>E-post</span><input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="navn@epost.no"/></label>{authError && <div className="authMsg error">{authError}</div>}{message && <div className="authMsg ok">{message}</div>}<button className="primary" onClick={signIn}>Logg inn med e-postlenke</button><small>Første MVP bruker magic link. Google-login kan kobles på senere i Supabase Auth.</small></div></section></main></div>
+    return <div className="page"><main className="phone"><section className="screen authScreen"><div className="authCard"><img src="/logo-mark.png" alt="Travelvault"/><h1>Travelvault</h1><p>Alt fra turen samlet på ett sted.</p><label className="field"><span>E-post</span><input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="navn@epost.no"/></label>{authError && <div className="authMsg error">{authError}</div>}{message && <div className="authMsg ok">{message}</div>}<button className="primary" onClick={signIn}>Logg inn med e-postlenke</button><small>Første MVP bruker magic link. Google-login kan kobles på senere i Supabase Auth.</small><div className="policyLinks"><a href="/privacy">Personvern</a><a href="/terms">Vilkår</a></div></div></section></main></div>
   }
 
   return <App session={session} />
+}
+
+function PolicyPage({ type }){
+  const isPrivacy = type === 'privacy'
+  const title = isPrivacy ? 'Personvernerklæring' : 'Vilkår for bruk'
+
+  useEffect(() => {
+    document.title = `${title} | Travelvault`
+  }, [title])
+
+  return <div className="page policyPage"><main className="policyShell"><header className="policyHero"><a href="/" className="policyBrand"><img src="/logo-mark.png" alt="Travelvault"/><span>Travelvault</span></a><p>En Notools-app</p><h1>{title}</h1><small>Sist oppdatert: 5. juli 2026</small></header>{isPrivacy ? <PrivacyPolicy/> : <TermsPolicy/>}<footer className="policyFooter"><a href="/">Til Travelvault</a><a href="/privacy">Personvern</a><a href="/terms">Vilkår</a><span>Notools, notools.no</span></footer></main></div>
+}
+
+function PrivacyPolicy(){
+  return <article className="policyContent">
+    <section><h2>Hvem vi er</h2><p>Travelvault er en app fra Notools for å samle reiseplaner, pakkelister, deltakere, utlegg, dokumenter og bilder knyttet til en tur. Denne personvernerklæringen forklarer hvordan Travelvault behandler personopplysninger.</p></section>
+    <section><h2>Opplysninger vi behandler</h2><p>Når du bruker Travelvault kan vi behandle e-postadresse, navn eller visningsnavn, turinformasjon, deltakere, pakkelister, planpunkter, utlegg, dokumenter, bilder og teknisk informasjon som er nødvendig for innlogging, sikkerhet og drift.</p></section>
+    <section><h2>Innlogging</h2><p>Travelvault kan bruke Supabase Auth og Google OAuth for innlogging. Ved Google-innlogging mottar appen grunnleggende profilinformasjon som Google deler, normalt e-postadresse, navn og unik bruker-ID. Client ID og hemmelige nøkler lagres ikke i nettleseren.</p></section>
+    <section><h2>Formål</h2><p>Opplysningene brukes til å opprette og vise turer, gi tilgang til riktige deltakere, lagre innhold du legger inn, håndtere innlogging og beskytte kontoen og tjenesten mot misbruk.</p></section>
+    <section><h2>Lagring og databehandlere</h2><p>Data kan lagres hos Supabase og andre leverandører som brukes til hosting, autentisering og drift. Vi bruker leverandører kun for å levere Travelvault og relaterte Notools-tjenester.</p></section>
+    <section><h2>Deling</h2><p>Vi selger ikke personopplysninger. Turinnhold deles bare med brukere som har tilgang til samme tur, eller når det er nødvendig for drift, sikkerhet, lovpålagte krav eller med ditt samtykke.</p></section>
+    <section><h2>Dine rettigheter</h2><p>Du kan be om innsyn, retting eller sletting av personopplysninger som gjelder deg. Du kan også be om begrensning av behandling eller protestere der loven gir deg rett til det.</p></section>
+    <section><h2>Kontakt</h2><p>Kontakt Notools dersom du har spørsmål om personvern eller ønsker å bruke rettighetene dine. Bruk kontaktinformasjonen som er oppgitt på notools.no.</p></section>
+  </article>
+}
+
+function TermsPolicy(){
+  return <article className="policyContent">
+    <section><h2>Om tjenesten</h2><p>Travelvault er en Notools-app som hjelper brukere med å organisere turer, deltakere, pakkelister, utlegg, dokumenter og bilder. Ved å bruke Travelvault godtar du disse vilkårene.</p></section>
+    <section><h2>Brukerkonto</h2><p>Du er ansvarlig for at kontoen din brukes på en trygg måte, og for at informasjonen du legger inn er riktig og lovlig. Ikke del tilgang med personer som ikke skal ha innsyn i turen.</p></section>
+    <section><h2>Innhold</h2><p>Du beholder rettighetene til innholdet du legger inn. Du gir Travelvault rett til å lagre, vise og behandle innholdet så langt det er nødvendig for å levere tjenesten.</p></section>
+    <section><h2>Akseptabel bruk</h2><p>Du skal ikke bruke Travelvault til ulovlig innhold, misbruk av andres personopplysninger, forsøk på å omgå sikkerhet, spam eller handlinger som kan skade tjenesten eller andre brukere.</p></section>
+    <section><h2>Tilgjengelighet og endringer</h2><p>Travelvault kan endres, forbedres eller være midlertidig utilgjengelig. Vi forsøker å holde tjenesten stabil, men garanterer ikke feilfri eller uavbrutt drift.</p></section>
+    <section><h2>Ansvar</h2><p>Travelvault er et planleggingsverktøy. Du er selv ansvarlig for å kontrollere reisedokumenter, tider, betalinger, bookinger og annen informasjon som er viktig for reisen.</p></section>
+    <section><h2>Oppsigelse</h2><p>Du kan slutte å bruke tjenesten når som helst. Tilgang kan begrenses eller fjernes ved brudd på vilkårene eller dersom det er nødvendig for sikkerhet eller drift.</p></section>
+    <section><h2>Kontakt</h2><p>Spørsmål om vilkårene kan rettes til Notools via kontaktinformasjonen på notools.no.</p></section>
+  </article>
 }
 
 function App({ session, demoMode = false }){
@@ -427,4 +471,4 @@ function Avatar({ name }){
   return <span className="avatar">{initials(name)}</span>
 }
 
-createRoot(document.getElementById('root')).render(<AuthGate />)
+createRoot(document.getElementById('root')).render(<RootRouter />)
