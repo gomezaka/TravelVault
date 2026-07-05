@@ -30,6 +30,37 @@ VITE_SUPABASE_ANON_KEY=DIN_ANON_KEY
    - `supabase/02_storage.sql` oppretter Storage-buckets for dokumenter, bilder og kvitteringer.
    - `supabase/03_trip_persistence.sql` legger til policyer for å lagre og hente turmedlemmer.
 
+## Google-innlogging
+
+Appen har Google OAuth-knapp via Supabase Auth. Oppsettet gjøres uten ekstra miljøvariabler i frontend.
+
+I Google Cloud:
+
+- OAuth consent screen: Notools
+- Authorized domain: `notools.no`
+- Application home page: `https://notools.no`
+- Privacy policy: `https://notools.no/privacy`
+- Terms of service: `https://notools.no/terms`
+- OAuth client: `Travelvault Web`
+- Authorized JavaScript origins:
+  - `https://travelvault.notools.no`
+  - `https://travel-vault.netlify.app`
+  - `http://localhost:5173`
+- Authorized redirect URI:
+  - `https://nrxkuhvafvueevvtghml.supabase.co/auth/v1/callback`
+
+I Supabase:
+
+- Authentication -> Providers -> Google
+- Aktiver Google-provider
+- Lim inn Client ID og Client Secret fra `Travelvault Web`
+- Authentication -> URL Configuration:
+  - Site URL lokalt: `http://localhost:5173`
+  - Redirect URLs:
+    - `http://localhost:5173/**`
+    - `https://travelvault.notools.no/**`
+    - `https://travel-vault.netlify.app/**`
+
 ## Hva er koblet nå
 
 - Supabase-klient

@@ -1,7 +1,6 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { CalendarDays, Camera, ChevronLeft, FileText, Home, ListChecks, MoreHorizontal, PiggyBank, Plus, Settings, Trophy, Users, MapPin, Plane, Hotel, Ship, Utensils } from 'lucide-react'
-import { demoTrips, documents, initialEvents, initialExpenses, initialMatches, initialMembers, initialPacking, photos } from './data/demoData'
 import { supabase } from './lib/supabase'
 import { createTripWithMembers, fetchMembersForTrip, fetchTripsForUser } from './lib/tripRepository'
 import './styles/app.css'
@@ -16,11 +15,81 @@ const tabs = [
 ]
 const categories = ['Dokumenter', 'Klær', 'Hygiene', 'Elektronikk', 'Mat/snacks', 'Sport/cup', 'Barn', 'Diverse']
 const emptyTripContent = { members: [], events: [], packing: [], expenses: [], matches: [] }
+const authEnabled = import.meta.env.VITE_ENABLE_AUTH === 'true'
+const googleAuthEnabled = import.meta.env.VITE_ENABLE_GOOGLE_AUTH === 'true'
+const testStateKey = 'travelvault-test-state-v1'
 
 function formatMoney(n){ return `${Math.round(n).toLocaleString('nb-NO')} kr` }
-function initials(name){ return name.split(' ').map(x => x[0]).join('').slice(0, 2).toUpperCase() }
-function localMemberId(name){ return name.toLowerCase().replaceAll(' ', '-').replaceAll('æ', 'ae').replaceAll('ø', 'o').replaceAll('å', 'a') }
-function normalizeDemoTrips(){ return demoTrips.map(trip => ({ ...trip, source: 'demo' })) }
+function initials(name){ return (name || '?').split(' ').map(x => x[0]).join('').slice(0, 2).toUpperCase() }
+function ownerDisplayName(session){
+  return session?.user?.user_metadata?.full_name || session?.user?.email?.split('@')[0] || 'Deg'
+}
+function createTripDraft(session){
+  return { step: 1, type: 'cup', title: '', start: '', end: '', location: '', description: '', participants: [ownerDisplayName(session)] }
+}
+function emptyTripDetails(members = []){
+  return { members, events: [], packing: [], expenses: [], matches: [], documents: [], photos: [] }
+}
+function loadTestState(){
+  try{
+    const parsed = JSON.parse(window.localStorage.getItem(testStateKey) || '{}')
+    return {
+      trips: Array.isArray(parsed.trips) ? parsed.trips : [],
+      detailsByTrip: parsed.detailsByTrip && typeof parsed.detailsByTrip === 'object' ? parsed.detailsByTrip : {}
+    }
+  }catch{
+    return { trips: [], detailsByTrip: {} }
+  }
+}
+function saveTestState(trips, detailsByTrip){
+  window.localStorage.setItem(testStateKey, JSON.stringify({ trips, detailsByTrip }))
+}
+function isoToday(){
+  return new Date().toISOString().slice(0, 10)
+}
+function statusForTrip(startDate, endDate){
+  const today = isoToday()
+  if(endDate && endDate < today) return 'Tidligere'
+  if(startDate && startDate <= today && (!endDate || endDate >= today)) return 'Pågår'
+  return 'Kommende'
+}
+function formatDate(dateString){
+  if(!dateString) return ''
+  const [year, month, day] = dateString.split('-')
+  return `${Number(day)}.${Number(month)}.${year}`
+}
+function dateLabel(startDate, endDate){
+  if(startDate && endDate) return `${formatDate(startDate)}-${formatDate(endDate)}`
+  if(startDate) return formatDate(startDate)
+  return 'Dato ikke satt'
+}
+function createLocalTripWithMembers(create){
+  const tripId = `local-${Date.now()}`
+  const participantNames = [...new Set((create.participants || []).map(name => name.trim()).filter(Boolean))]
+  const members = (participantNames.length ? participantNames : ['Deg']).map((name, index) => ({
+    id: `${tripId}-member-${index}`,
+    name,
+    role: index === 0 ? 'Eier' : 'Deltaker',
+    status: 'active'
+  }))
+  const trip = {
+    id: tripId,
+    title: create.title?.trim() || 'Ny tur',
+    type: create.type || 'family',
+    date: dateLabel(create.start, create.end),
+    location: create.location?.trim() || 'Ukjent sted',
+    members: members.length,
+    status: statusForTrip(create.start, create.end),
+    next: 'Legg til første hendelse',
+    startDate: create.start || null,
+    endDate: create.end || null,
+    description: create.description?.trim() || '',
+    source: 'local',
+    inviteCode: Math.random().toString(36).slice(2, 8).toUpperCase(),
+    localMembers: members
+  }
+  return { trip, members }
+}
 
 function computeSettlements(expenses, members){
   const balances = Object.fromEntries(members.map(m => [m.id, 0]))
@@ -52,7 +121,7 @@ function RootRouter(){
   const path = window.location.pathname.replace(/\/$/, '')
   if(path === '/privacy') return <PolicyPage type="privacy" />
   if(path === '/terms') return <PolicyPage type="terms" />
-  return <AuthGate />
+  return authEnabled ? <AuthGate /> : <App testMode />
 }
 
 function AuthGate(){
@@ -107,17 +176,36 @@ function AuthGate(){
     setMessage('Sjekk e-posten din for innloggingslenke.')
   }
 
-  if(!supabase) return <App demoMode />
+  const signInWithGoogle = async () => {
+    setAuthError('')
+    setMessage('')
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: {
+        redirectTo: window.location.origin
+      }
+    })
+    if(error){
+      const missingSecret = error.message?.toLowerCase().includes('oauth secret')
+      setAuthError(missingSecret ? 'Google-innlogging mangler OAuth secret i Supabase. Bruk e-postlenke, eller legg inn Google Client ID og Client Secret i Supabase Auth.' : error.message)
+    }
+  }
+
+  if(!supabase) return <MissingSupabaseConfig />
 
   if(loading){
     return <div className="page"><main className="phone"><section className="screen authScreen"><div className="authCard"><img src="/logo-mark.png" alt="Travelvault"/><h1>Travelvault</h1><p>Laster innlogging …</p></div></section></main></div>
   }
 
   if(!session){
-    return <div className="page"><main className="phone"><section className="screen authScreen"><div className="authCard"><img src="/logo-mark.png" alt="Travelvault"/><h1>Travelvault</h1><p>Alt fra turen samlet på ett sted.</p><label className="field"><span>E-post</span><input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="navn@epost.no"/></label>{authError && <div className="authMsg error">{authError}</div>}{message && <div className="authMsg ok">{message}</div>}<button className="primary" onClick={signIn}>Logg inn med e-postlenke</button><small>Første MVP bruker magic link. Google-login kan kobles på senere i Supabase Auth.</small><div className="policyLinks"><a href="/privacy">Personvern</a><a href="/terms">Vilkår</a></div></div></section></main></div>
+    return <div className="page"><main className="phone"><section className="screen authScreen"><div className="authCard"><img src="/logo-mark.png" alt="Travelvault"/><h1>Travelvault</h1><p>Alt fra turen samlet på ett sted.</p>{googleAuthEnabled && <><button className="googleBtn" onClick={signInWithGoogle} type="button"><span>G</span>Fortsett med Google</button><div className="authDivider"><span></span><b>eller</b><span></span></div></>}<label className="field"><span>E-post</span><input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="navn@epost.no"/></label>{authError && <div className="authMsg error">{authError}</div>}{message && <div className="authMsg ok">{message}</div>}<button className="primary" onClick={signIn}>Logg inn med e-postlenke</button><small>{googleAuthEnabled ? 'Du kan logge inn med Google eller e-postlenke. Google OAuth må være aktivert i Supabase Auth.' : 'Google-innlogging er skjult til OAuth er konfigurert i Supabase. Bruk e-postlenke for testing nå.'}</small><div className="policyLinks"><a href="/privacy">Personvern</a><a href="/terms">Vilkår</a></div></div></section></main></div>
   }
 
   return <App session={session} />
+}
+
+function MissingSupabaseConfig(){
+  return <div className="page"><main className="phone"><section className="screen authScreen"><div className="authCard"><img src="/logo-mark.png" alt="Travelvault"/><h1>Travelvault</h1><p>Supabase mangler i miljøoppsettet.</p><div className="authMsg error">Legg inn VITE_SUPABASE_URL og VITE_SUPABASE_ANON_KEY i .env.local for å teste med ekte brukere og lagring.</div><small>Appen starter nå uten falske turer eller forhåndsutfylte data.</small></div></section></main></div>
 }
 
 function PolicyPage({ type }){
@@ -157,25 +245,30 @@ function TermsPolicy(){
   </article>
 }
 
-function App({ session, demoMode = false }){
+function App({ session, testMode = false }){
+  const supabaseMode = Boolean(!testMode && supabase && session)
+  const [storedTestState] = useState(() => testMode ? loadTestState() : { trips: [], detailsByTrip: {} })
   const [view, setView] = useState('trips')
-  const [trips, setTrips] = useState(demoMode ? normalizeDemoTrips() : [])
-  const [tripsLoading, setTripsLoading] = useState(Boolean(supabase && session))
+  const [trips, setTrips] = useState(() => testMode ? storedTestState.trips : [])
+  const [detailsByTrip, setDetailsByTrip] = useState(() => testMode ? storedTestState.detailsByTrip : {})
+  const [tripsLoading, setTripsLoading] = useState(supabaseMode)
   const [tripsError, setTripsError] = useState('')
-  const [activeTrip, setActiveTrip] = useState((demoMode ? normalizeDemoTrips() : [])[0] || null)
+  const [activeTrip, setActiveTrip] = useState(null)
   const [tab, setTab] = useState('na')
   const [mer, setMer] = useState('list')
   const [older, setOlder] = useState(false)
-  const [members, setMembers] = useState(demoMode ? initialMembers : [])
-  const [events, setEvents] = useState(demoMode ? initialEvents : [])
-  const [packing, setPacking] = useState(demoMode ? initialPacking : [])
-  const [expenses, setExpenses] = useState(demoMode ? initialExpenses : [])
-  const [matches, setMatches] = useState(demoMode ? initialMatches : [])
+  const [members, setMembers] = useState([])
+  const [events, setEvents] = useState([])
+  const [packing, setPacking] = useState([])
+  const [expenses, setExpenses] = useState([])
+  const [matches, setMatches] = useState([])
+  const [documents, setDocuments] = useState([])
+  const [photos, setPhotos] = useState([])
   const [savingCreate, setSavingCreate] = useState(false)
-  const [create, setCreate] = useState({ step: 1, type: 'cup', title: '', start: '', end: '', location: '', description: '', participants: ['Morten'] })
+  const [create, setCreate] = useState(() => createTripDraft(session))
 
   const loadTrips = useCallback(async () => {
-    if(demoMode || !supabase || !session) return
+    if(!supabaseMode) return
     setTripsLoading(true)
     setTripsError('')
     try{
@@ -186,9 +279,21 @@ function App({ session, demoMode = false }){
     }finally{
       setTripsLoading(false)
     }
-  }, [demoMode, session])
+  }, [supabaseMode])
 
   useEffect(() => { loadTrips() }, [loadTrips])
+
+  useEffect(() => {
+    if(testMode) saveTestState(trips, detailsByTrip)
+  }, [testMode, trips, detailsByTrip])
+
+  useEffect(() => {
+    if(!testMode || !activeTrip) return
+    setDetailsByTrip(current => ({
+      ...current,
+      [activeTrip.id]: { members, events, packing, expenses, matches, documents, photos }
+    }))
+  }, [testMode, activeTrip, members, events, packing, expenses, matches, documents, photos])
 
   const resetContentForTrip = () => {
     setMembers(emptyTripContent.members)
@@ -196,6 +301,8 @@ function App({ session, demoMode = false }){
     setPacking(emptyTripContent.packing)
     setExpenses(emptyTripContent.expenses)
     setMatches(emptyTripContent.matches)
+    setDocuments([])
+    setPhotos([])
   }
 
   const openTrip = async (trip) => {
@@ -204,16 +311,19 @@ function App({ session, demoMode = false }){
     setTab('na')
     setMer('list')
 
-    if(trip.source === 'demo' || demoMode || !supabase){
-      setMembers(initialMembers)
-      setEvents(initialEvents)
-      setPacking(initialPacking)
-      setExpenses(initialExpenses)
-      setMatches(initialMatches)
+    resetContentForTrip()
+    if(!supabaseMode || trip.source === 'local'){
+      const details = detailsByTrip[trip.id] || emptyTripDetails(trip.localMembers || [])
+      setMembers(details.members || [])
+      setEvents(details.events || [])
+      setPacking(details.packing || [])
+      setExpenses(details.expenses || [])
+      setMatches(details.matches || [])
+      setDocuments(details.documents || [])
+      setPhotos(details.photos || [])
       return
     }
 
-    resetContentForTrip()
     try{
       const tripMembers = await fetchMembersForTrip(trip.id)
       setMembers(tripMembers)
@@ -226,30 +336,23 @@ function App({ session, demoMode = false }){
     setSavingCreate(true)
     setTripsError('')
 
-    if(demoMode || !supabase || !session){
-      const participantNames = create.participants.map(name => name.trim()).filter(Boolean)
-      const trip = {
-        id: `trip-${Date.now()}`,
-        title: create.title || 'Ny tur',
-        type: create.type,
-        date: 'Dato ikke satt',
-        location: create.location || 'Ukjent sted',
-        members: participantNames.length || 1,
-        status: 'Kommende',
-        next: 'Legg til første hendelse',
-        source: 'local'
-      }
-      const nextMembers = participantNames.map((name, index) => ({ id: localMemberId(name), name, role: index === 0 ? 'Eier' : 'Deltaker' }))
-      setTrips(current => [trip, ...current])
+    if(!supabaseMode){
+      const { trip, members: createdMembers } = createLocalTripWithMembers(create)
+      const details = emptyTripDetails(createdMembers)
+      setTrips(current => [trip, ...current.filter(item => item.id !== trip.id)])
+      setDetailsByTrip(current => ({ ...current, [trip.id]: details }))
       setActiveTrip(trip)
-      setMembers(nextMembers)
+      setMembers(createdMembers)
       setEvents([])
       setPacking([])
       setExpenses([])
       setMatches([])
+      setDocuments([])
+      setPhotos([])
       setView('trip')
       setTab('na')
       setMer('list')
+      setCreate(createTripDraft(session))
       setSavingCreate(false)
       return
     }
@@ -263,10 +366,12 @@ function App({ session, demoMode = false }){
       setPacking([])
       setExpenses([])
       setMatches([])
+      setDocuments([])
+      setPhotos([])
       setView('trip')
       setTab('na')
       setMer('list')
-      setCreate({ step: 1, type: 'cup', title: '', start: '', end: '', location: '', description: '', participants: ['Morten'] })
+      setCreate(createTripDraft(session))
       await loadTrips()
     }catch(error){
       setTripsError(error.message || 'Klarte ikke å lagre turen.')
@@ -275,28 +380,68 @@ function App({ session, demoMode = false }){
     }
   }
 
+  const joinByInviteCode = (code) => {
+    const normalized = code.trim().toUpperCase()
+    if(!normalized) return { ok: false, message: 'Skriv inn en invitasjonskode.' }
+    const trip = trips.find(item => item.inviteCode === normalized)
+    if(!trip) return { ok: false, message: 'Fant ingen lokal testtur med den koden.' }
+    openTrip(trip)
+    return { ok: true }
+  }
+
+  const deleteActiveTrip = () => {
+    if(!activeTrip) return
+    const nextTripId = activeTrip.id
+    setTrips(current => current.filter(trip => trip.id !== nextTripId))
+    setDetailsByTrip(current => {
+      const next = { ...current }
+      delete next[nextTripId]
+      return next
+    })
+    setActiveTrip(null)
+    setView('trips')
+    setTab('na')
+    setMer('list')
+  }
+
   return <div className="page"><main className="phone">
-    {view === 'trips' && <TripsView older={older} setOlder={setOlder} openTrip={openTrip} setView={setView} trips={trips} loading={tripsLoading} error={tripsError} demoMode={demoMode}/>} 
+    {view === 'trips' && <TripsView older={older} setOlder={setOlder} openTrip={openTrip} setView={setView} trips={trips} loading={tripsLoading} error={tripsError} testMode={testMode} showSignOut={supabaseMode} onJoinByCode={joinByInviteCode}/>} 
     {view === 'create' && <CreateTrip create={create} setCreate={setCreate} setView={setView} finishCreate={finishCreate} saving={savingCreate} error={tripsError}/>} 
-    {view === 'trip' && activeTrip && <TripShell trip={activeTrip} setView={setView} tab={tab} setTab={setTab} mer={mer} setMer={setMer} members={members} events={events} setEvents={setEvents} packing={packing} setPacking={setPacking} expenses={expenses} setExpenses={setExpenses} matches={matches} setMatches={setMatches}/>} 
+    {view === 'trip' && activeTrip && <TripShell trip={activeTrip} setView={setView} tab={tab} setTab={setTab} mer={mer} setMer={setMer} members={members} setMembers={setMembers} events={events} setEvents={setEvents} packing={packing} setPacking={setPacking} expenses={expenses} setExpenses={setExpenses} matches={matches} setMatches={setMatches} documents={documents} setDocuments={setDocuments} photos={photos} setPhotos={setPhotos} deleteTrip={deleteActiveTrip}/>} 
   </main></div>
 }
 
-function TripsView({ older, setOlder, openTrip, setView, trips, loading, error, demoMode }){
+function TripsView({ older, setOlder, openTrip, setView, trips, loading, error, testMode, showSignOut, onJoinByCode }){
+  const [joining, setJoining] = useState(false)
+  const [joinCode, setJoinCode] = useState('')
+  const [joinError, setJoinError] = useState('')
   const ongoing = trips.filter(t => t.status === 'Pågår')
   const upcoming = trips.filter(t => t.status === 'Kommende')
   const previous = trips.filter(t => t.status === 'Tidligere')
   const hasTrips = trips.length > 0
+  const join = () => {
+    const result = onJoinByCode(joinCode)
+    if(result?.ok){
+      setJoinError('')
+      setJoinCode('')
+      setJoining(false)
+      return
+    }
+    setJoinError(result?.message || 'Klarte ikke å bruke invitasjonskoden.')
+  }
 
-  return <section className="screen with-actions"><header className="appHeader"><div className="brandRow"><img src="/logo-mark.png" alt="Travelvault"/><div><h1>Travelvault</h1><p>Alt fra turen samlet på ett sted</p></div></div>{supabase && <button className="signOutBtn" onClick={() => supabase.auth.signOut()}>Logg ut</button>}</header><div className="content gap-xl">
-    {demoMode && <div className="authMsg ok">Demomodus: legg inn Supabase-variabler for ekte lagring.</div>}
+  const emptyText = testMode ? 'Opprett første tur for å teste flyten lokalt. Ingenting krever innlogging akkurat nå.' : 'Opprett første tur, så lagres den i Supabase og vises her neste gang du logger inn.'
+
+  return <section className="screen with-actions"><header className="appHeader"><div className="brandRow"><img src="/logo-mark.png" alt="Travelvault"/><div><h1>Travelvault</h1><p>Alt fra turen samlet på ett sted</p></div></div>{showSignOut && <button className="signOutBtn" onClick={() => supabase.auth.signOut()}>Logg ut</button>}</header><div className="content gap-xl">
     {error && <div className="authMsg error">{error}</div>}
+    {joinError && <div className="authMsg error">{joinError}</div>}
+    {joining && <div className="inlineForm"><input value={joinCode} onChange={e => setJoinCode(e.target.value.toUpperCase())} placeholder="Invitasjonskode"/><div><button onClick={() => setJoining(false)} type="button">Avbryt</button><button onClick={join} type="button">Bli med</button></div></div>}
     {loading && <Empty title="Henter turer" text="Laster dine Travelvault-turer fra Supabase." />}
-    {!loading && !hasTrips && <Empty title="Ingen turer ennå" text="Opprett første tur, så lagres den i Supabase og vises her neste gang du logger inn." action="Opprett ny tur" onAction={() => setView('create')} />}
+    {!loading && !hasTrips && <Empty title="Ingen turer ennå" text={emptyText} action="Opprett ny tur" onAction={() => setView('create')} />}
     {!!ongoing.length && <TripSection title="Pågående" trips={ongoing} openTrip={openTrip}/>} 
     {!!upcoming.length && <TripSection title="Kommende" trips={upcoming} openTrip={openTrip}/>} 
     {!!previous.length && <div><button className="sectionToggle" onClick={() => setOlder(!older)}><span>Tidligere turer</span><b>{older ? 'Skjul' : 'Vis'}</b></button>{older && previous.map(trip => <TripCard key={trip.id} trip={trip} muted openTrip={openTrip}/>)}</div>}
-  </div><div className="bottomActions"><button className="primary" onClick={() => setView('create')}>Opprett ny tur</button><button className="secondary" type="button">Bli med via invitasjonskode</button></div></section>
+  </div><div className="bottomActions"><button className="primary withIcon" onClick={() => setView('create')}><Plus size={18}/>Opprett ny tur</button><button className="secondary withIcon" type="button" onClick={() => setJoining(true)}><Users size={18}/>Bli med via invitasjonskode</button></div></section>
 }
 
 function TripSection({ title, trips, openTrip }){
@@ -313,8 +458,8 @@ function CreateTrip({ create, setCreate, setView, finishCreate, saving, error })
 
   return <section className="screen with-actions"><TopLine title="Opprett ny tur" onBack={back}/><div className="progress">{[1, 2, 3, 4].map(step => <span key={step} className={step <= create.step ? 'active' : ''}/>)}</div><div className="content">
     {error && <div className="authMsg error">{error}</div>}
-    {create.step === 1 && <><h2>Hva slags tur?</h2><p className="lead">Dette styrer hvilke faner turen får</p>{[['family', 'Familietur'], ['friends', 'Vennetur'], ['cup', 'Cup/idrettstur'], ['work', 'Jobbtur'], ['other', 'Annet']].map(([id, label]) => <button key={id} onClick={() => setCreate({ ...create, type: id })} className={`choice ${create.type === id ? 'selected' : ''}`}>{label}<span>{create.type === id ? '✓' : ''}</span></button>)}</>}
-    {create.step === 2 && <><h2>Grunninfo</h2><Field label="Navn på tur" value={create.title} onChange={title => setCreate({ ...create, title })} placeholder="F.eks. Danmark Cup 2027"/><div className="two"><Field label="Startdato" type="date" value={create.start} onChange={start => setCreate({ ...create, start })}/><Field label="Sluttdato" type="date" value={create.end} onChange={end => setCreate({ ...create, end })}/></div><Field label="Hovedsted" value={create.location} onChange={location => setCreate({ ...create, location })} placeholder="F.eks. København"/><label className="field"><span>Beskrivelse</span><textarea value={create.description} onChange={e => setCreate({ ...create, description: e.target.value })}/></label></>}
+    {create.step === 1 && <TripTypeStep create={create} setCreate={setCreate}/>}
+    {create.step === 2 && <><h2>Grunninfo</h2><Field label="Navn på tur" value={create.title} onChange={title => setCreate({ ...create, title })} placeholder="F.eks. Sommerferie 2027"/><div className="two"><Field label="Startdato" type="date" value={create.start} onChange={start => setCreate({ ...create, start })}/><Field label="Sluttdato" type="date" value={create.end} onChange={end => setCreate({ ...create, end })}/></div><Field label="Hovedsted" value={create.location} onChange={location => setCreate({ ...create, location })} placeholder="F.eks. København"/><label className="field"><span>Beskrivelse</span><textarea value={create.description} onChange={e => setCreate({ ...create, description: e.target.value })}/></label></>}
     {create.step === 3 && <ParticipantsDraft create={create} setCreate={setCreate}/>} 
     {create.step === 4 && <><h2>Startinnhold</h2>{['Opprett pakkeliste', 'Legg til dokumenter', 'Legg til første planpunkt', 'Aktiver utlegg', 'Aktiver cupkamper'].map((label, index) => <div className="toggleRow" key={label}><span>{label}</span><b className={index < 4 || create.type === 'cup' ? 'on' : ''}></b></div>)}</>}
   </div><div className="bottomActions row"><button className="secondary" onClick={back} disabled={saving}>Tilbake</button><button className="primary" onClick={next} disabled={saving}>{saving ? 'Lagrer …' : create.step === 4 ? 'Opprett tur' : 'Neste'}</button></div></section>
@@ -331,6 +476,17 @@ function ParticipantsDraft({ create, setCreate }){
   return <><h2>Deltakere</h2><p className="lead">Første deltaker blir eier av turen. Flere kan inviteres senere.</p><div className="memberList">{create.participants.map((participant, index) => <div key={`${participant}-${index}`}><Avatar name={participant}/><span>{participant}</span><b>{index === 0 ? 'Eier' : 'Deltaker'}</b></div>)}</div><div className="inlineForm"><input value={name} onChange={e => setName(e.target.value)} placeholder="Navn på deltaker"/><button onClick={add} type="button">Legg til deltaker</button></div></>
 }
 
+function TripTypeStep({ create, setCreate }){
+  const types = [
+    ['family', Home, 'Familietur'],
+    ['friends', Users, 'Vennetur'],
+    ['cup', Trophy, 'Cup/idrettstur'],
+    ['work', Settings, 'Jobbtur'],
+    ['other', MapPin, 'Annet']
+  ]
+  return <><h2>Hva slags tur?</h2><p className="lead">Dette styrer hvilke faner turen får</p>{types.map(([id, Icon, label]) => <button key={id} onClick={() => setCreate({ ...create, type: id })} className={`choice ${create.type === id ? 'selected' : ''}`}><span className="choiceLabel"><Icon size={18}/>{label}</span><span>{create.type === id ? '✓' : ''}</span></button>)}</>
+}
+
 function Field({ label, value, onChange, placeholder, type = 'text' }){
   return <label className="field"><span>{label}</span><input type={type} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder}/></label>
 }
@@ -343,31 +499,61 @@ function TripShell(props){
   const { trip, setView, tab, setTab, mer, setMer } = props
   return <section className="screen"><TopLine title={trip.title} trip={trip} onBack={() => setView('trips')}/><div className="content">
     {tab === 'na' && <NowView {...props}/>} 
-    {tab === 'plan' && <PlanView events={props.events}/>} 
+    {tab === 'plan' && <PlanView events={props.events} setEvents={props.setEvents}/>} 
     {tab === 'pakk' && <PackingView members={props.members} packing={props.packing} setPacking={props.setPacking}/>} 
     {tab === 'utlegg' && <ExpensesView members={props.members} expenses={props.expenses} setExpenses={props.setExpenses}/>} 
     {tab === 'mer' && <MoreView {...props} mer={mer} setMer={setMer}/>} 
   </div><nav className="tabbar">{tabs.map(([id, Icon, label]) => <button key={id} onClick={() => { setTab(id); setMer('list') }} className={tab === id ? 'active' : ''}><Icon size={20}/><span>{label}</span></button>)}</nav></section>
 }
 
-function NowView({ trip, events, packing, expenses, matches }){
+function NowView({ trip, events, packing, expenses, matches, setTab, setMer }){
   const nextEvent = events[0]
   const nextMatch = matches[0]
   const nextTitle = nextEvent?.title || (trip.type === 'cup' ? 'Legg inn første kamp' : 'Legg inn første planpunkt')
   const nextTime = nextEvent?.time || 'Ikke satt'
   const nextPlace = nextEvent?.place || trip.location
 
-  return <><button className="hero"><small>Neste nå</small><h2>{nextTitle}</h2><div className="stats"><div><b>{nextTime}</b><span>Tidspunkt</span></div><div><b>{nextMatch?.meetup || 'Ikke satt'}</b><span>Oppmøte</span></div><div><b>{nextPlace}</b><span>Sted</span></div></div><p>{nextEvent?.note || 'Start med å legge inn plan, dokumenter, pakkeliste og utlegg for turen.'}</p><div className="heroBtns"><button>Vis detaljer</button><button>Åpne kart</button></div></button><h2 className="sectionTitle">Viktige varsler</h2><div className="alerts"><Alert color="yellow" text={`${packing.filter(item => !item.packed).length} pakkepunkter mangler`}/><Alert color="blue" text={`${expenses.length} utlegg er registrert`}/><Alert color="red" text={trip.source === 'supabase' ? 'Dokumenter og bilder kobles i neste patch' : 'Hotellbooking bør lastes ned før avreise'}/></div><h2 className="sectionTitle">Dagens oversikt</h2><div className="timeline">{events.slice(0, 4).map(event => <div key={event.id}><b>{event.time}</b><span>{event.title}</span></div>)}{!events.length && <p>Ingen hendelser lagt inn ennå.</p>}</div></>
+  const openMap = () => {
+    if(nextPlace && nextPlace !== 'Ukjent sted') window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(nextPlace)}`, '_blank', 'noopener,noreferrer')
+  }
+
+  return <><div className="hero"><small>Neste nå</small><h2>{nextTitle}</h2><div className="stats"><div><b>{nextTime}</b><span>Tidspunkt</span></div><div><b>{nextMatch?.meetup || 'Ikke satt'}</b><span>Oppmøte</span></div><div><b>{nextPlace}</b><span>Sted</span></div></div><p>{nextEvent?.note || 'Start med å legge inn plan, dokumenter, pakkeliste og utlegg for turen.'}</p><div className="heroBtns"><button onClick={() => setTab('plan')} type="button">Vis detaljer</button><button onClick={openMap} type="button">Åpne kart</button></div></div><h2 className="sectionTitle">Viktige varsler</h2><div className="alerts"><Alert color="yellow" text={`${packing.filter(item => !item.packed).length} pakkepunkter mangler`}/><Alert color="blue" text={`${expenses.length} utlegg er registrert`}/><Alert color="red" text="Dokumenter og bilder kan legges inn under Mer"/></div><h2 className="sectionTitle">Dagens oversikt</h2><div className="timeline">{events.slice(0, 4).map(event => <div key={event.id}><b>{event.time}</b><span>{event.title}</span></div>)}{!events.length && <p>Ingen hendelser lagt inn ennå.</p>}</div></>
 }
 
 function Alert({ color, text }){
   return <div className={`alert ${color}`}><span></span>{text}</div>
 }
 
-function PlanView({ events }){
+function PlanView({ events, setEvents }){
   const [open, setOpen] = useState(null)
+  const [adding, setAdding] = useState(false)
   const days = [...new Set(events.map(event => event.day))]
-  return <>{!events.length && <Empty title="Ingen planpunkter" text="Legg inn fly, hotell, aktivitet eller oppmøte." action="Legg til planpunkt"/>}{days.map(day => <div key={day}><h2 className="dayTitle">{day}</h2>{events.filter(event => event.day === day).map(event => <EventCard key={event.id} event={event} open={open === event.id} onClick={() => setOpen(open === event.id ? null : event.id)}/>)}</div>)}</>
+  return <>{!events.length && <Empty title="Ingen planpunkter" text="Legg inn fly, hotell, aktivitet eller oppmøte." action="Legg til planpunkt" onAction={() => setAdding(true)}/>} {days.map(day => <div key={day}><h2 className="dayTitle">{day}</h2>{events.filter(event => event.day === day).map(event => <EventCard key={event.id} event={event} open={open === event.id} onClick={() => setOpen(open === event.id ? null : event.id)}/>)}</div>)}{!adding && <button className="dashed" onClick={() => setAdding(true)}><Plus size={18}/> Legg til planpunkt</button>}{adding && <AddEvent events={events} setEvents={setEvents} close={() => setAdding(false)}/>}</>
+}
+
+function AddEvent({ events, setEvents, close }){
+  const [title, setTitle] = useState('')
+  const [date, setDate] = useState('')
+  const [time, setTime] = useState('')
+  const [place, setPlace] = useState('')
+  const [type, setType] = useState('activity')
+  const [note, setNote] = useState('')
+  const add = () => {
+    if(!title.trim()) return
+    setEvents([...events, {
+      id: `event-${Date.now()}`,
+      day: date ? formatDate(date) : 'Uten dato',
+      time: time || 'Ikke satt',
+      title: title.trim(),
+      place: place.trim() || 'Ikke satt',
+      type,
+      status: 'Planlagt',
+      note: note.trim() || 'Ingen notat.',
+      document: null
+    }])
+    close()
+  }
+  return <div className="inlineForm"><input value={title} onChange={e => setTitle(e.target.value)} placeholder="Tittel"/><div><input type="date" value={date} onChange={e => setDate(e.target.value)}/><input type="time" value={time} onChange={e => setTime(e.target.value)}/></div><input value={place} onChange={e => setPlace(e.target.value)} placeholder="Sted"/><select value={type} onChange={e => setType(e.target.value)}><option value="activity">Aktivitet</option><option value="flight">Fly</option><option value="transport">Transport</option><option value="hotel">Hotell</option><option value="match">Kamp</option><option value="food">Mat</option></select><textarea value={note} onChange={e => setNote(e.target.value)} placeholder="Notat"/><div><button onClick={close}>Avbryt</button><button onClick={add}>Legg til</button></div></div>
 }
 
 function EventCard({ event, open, onClick }){
@@ -394,7 +580,7 @@ function PackingView({ members, packing, setPacking }){
     setPacking([...packing, ...names.filter(name => !existing.has(name)).map((name, index) => ({ id: `std-${Date.now()}-${index}`, title: name, category: 'Sport/cup', assignedTo: null, packed: false, mustBuy: false }))])
   }
 
-  return <><div className="chips">{['Alle', 'Mangler', 'Pakket', 'Må kjøpes'].map(item => <button className={filter === item ? 'active' : ''} onClick={() => setFilter(item)} key={item}>{item}</button>)}</div>{!packing.length && <Empty title="Pakkelisten er tom" text="Legg til det dere må huske, eller start med en standardliste." action="Bruk standardliste" onAction={addStd}/>} {packing.length > 0 && <><h2 className="sectionTitle">Felles pakkeliste</h2>{visible.filter(item => !item.assignedTo).map(item => <PackRow key={item.id} item={item} setPacking={setPacking} packing={packing}/>) }{members.map(member => { const rows = visible.filter(item => item.assignedTo === member.id); return rows.length ? <div key={member.id}><h2 className="sectionTitle">{member.name}</h2>{rows.map(item => <PackRow key={item.id} item={item} setPacking={setPacking} packing={packing}/>)}</div> : null })}<button className="dashed" onClick={() => setAdding(true)}><Plus size={18}/> Legg til punkt</button>{adding && <div className="inlineForm"><input value={title} onChange={e => setTitle(e.target.value)} placeholder="Hva må pakkes?"/><select value={category} onChange={e => setCategory(e.target.value)}>{categories.map(item => <option key={item}>{item}</option>)}</select><div><button onClick={() => setAdding(false)}>Avbryt</button><button onClick={add}>Legg til</button></div></div>}</>}</>
+  return <><div className="chips">{['Alle', 'Mangler', 'Pakket', 'Må kjøpes'].map(item => <button className={filter === item ? 'active' : ''} onClick={() => setFilter(item)} key={item}>{item}</button>)}</div>{!packing.length && <Empty title="Pakkelisten er tom" text="Legg til det dere må huske, eller start med en standardliste." action="Bruk standardliste" onAction={addStd}/>} {packing.length > 0 && <><h2 className="sectionTitle">Felles pakkeliste</h2>{visible.filter(item => !item.assignedTo).map(item => <PackRow key={item.id} item={item} setPacking={setPacking} packing={packing}/>) }{members.map(member => { const rows = visible.filter(item => item.assignedTo === member.id); return rows.length ? <div key={member.id}><h2 className="sectionTitle">{member.name}</h2>{rows.map(item => <PackRow key={item.id} item={item} setPacking={setPacking} packing={packing}/>)}</div> : null })}</>}{!adding && <button className="dashed" onClick={() => setAdding(true)}><Plus size={18}/> Legg til punkt</button>}{adding && <div className="inlineForm"><input value={title} onChange={e => setTitle(e.target.value)} placeholder="Hva må pakkes?"/><select value={category} onChange={e => setCategory(e.target.value)}>{categories.map(item => <option key={item}>{item}</option>)}</select><div><button onClick={() => setAdding(false)}>Avbryt</button><button onClick={add}>Legg til</button></div></div>}</>
 }
 
 function PackRow({ item, packing, setPacking }){
@@ -417,6 +603,9 @@ function AddExpense({ members, expenses, setExpenses }){
   const [title, setTitle] = useState('')
   const [amount, setAmount] = useState('')
   const [paidBy, setPaidBy] = useState(members[0]?.id || '')
+  useEffect(() => {
+    if(!paidBy && members[0]?.id) setPaidBy(members[0].id)
+  }, [paidBy, members])
   const add = () => {
     const payer = paidBy || members[0]?.id
     if(title && Number(amount) && payer){
@@ -433,34 +622,93 @@ function SettlementView({ members, expenses, back }){
   const rows = computeSettlements(expenses, members)
   const total = expenses.reduce((sum, expense) => sum + expense.amount, 0)
   const name = id => members.find(member => member.id === id)?.name || id
-  return <><button className="backRow" onClick={back}>← Utlegg</button><div className="summary split"><div><span>Totalt brukt</span><b>{formatMoney(total)}</b></div><div><span>Per person</span><b>{formatMoney(total / Math.max(1, members.length))}</b></div></div><h2 className="sectionTitle">Oppgjør</h2>{rows.length ? rows.map((row, index) => <div className="settlement" key={index}><span>{name(row.from)} skal betale {name(row.to)}</span><b>{formatMoney(row.amount)}</b></div>) : <div className="empty success">Alt er gjort opp!</div>}<div className="two"><button className="secondary">Kopier Vipps-tekst</button><button className="secondary">Eksporter</button></div></>
+  const text = rows.length ? rows.map(row => `${name(row.from)} skal betale ${name(row.to)}: ${formatMoney(row.amount)}`).join('\n') : 'Alt er gjort opp.'
+  const copy = async () => {
+    await navigator.clipboard?.writeText(text)
+  }
+  const exportText = () => {
+    const url = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }))
+    const link = document.createElement('a')
+    link.href = url
+    link.download = 'travelvault-oppgjor.txt'
+    link.click()
+    URL.revokeObjectURL(url)
+  }
+  return <><button className="backRow" onClick={back}>← Utlegg</button><div className="summary split"><div><span>Totalt brukt</span><b>{formatMoney(total)}</b></div><div><span>Per person</span><b>{formatMoney(total / Math.max(1, members.length))}</b></div></div><h2 className="sectionTitle">Oppgjør</h2>{rows.length ? rows.map((row, index) => <div className="settlement" key={index}><span>{name(row.from)} skal betale {name(row.to)}</span><b>{formatMoney(row.amount)}</b></div>) : <div className="empty success">Alt er gjort opp!</div>}<div className="two"><button className="secondary" onClick={copy}>Kopier Vipps-tekst</button><button className="secondary" onClick={exportText}>Eksporter</button></div></>
 }
 
 function MoreView(props){
   const { mer, setMer, trip } = props
   if(mer === 'list'){
     const rows = [['dokumenter', FileText, 'Dokumenter'], ['bilder', Camera, 'Bilder'], ['deltakere', Users, 'Deltakere'], ...(trip.type === 'cup' ? [['kamper', Trophy, 'Kamper']] : []), ['innstillinger', Settings, 'Innstillinger']]
-    return <div className="moreList">{rows.map(([id, Icon, label]) => <button key={id} onClick={() => setMer(id)}><Icon size={20}/><span>{label}</span><b>›</b></button>)}</div>
+    return <div className="moreList">{rows.map(([id, Icon, label]) => <button key={id} onClick={() => setMer(id)}><span className="iconTile"><Icon size={20}/></span><span>{label}</span><b>›</b></button>)}</div>
   }
   return <SubScreen {...props}/>
 }
 
 function SubScreen(props){
-  const { mer, setMer, members, expenses, matches, setMatches, packing, trip } = props
+  const { mer, setMer } = props
+  return <><button className="backRow" onClick={() => setMer('list')}>← Mer</button>{mer === 'dokumenter' && <DocScreen documents={props.documents} setDocuments={props.setDocuments}/>} {mer === 'bilder' && <PhotoScreen photos={props.photos} setPhotos={props.setPhotos}/>} {mer === 'deltakere' && <ParticipantsScreen {...props}/>} {mer === 'kamper' && <MatchScreen {...props}/>} {mer === 'innstillinger' && <SettingsScreen trip={props.trip} deleteTrip={props.deleteTrip}/>}</>
+}
+
+function ParticipantsScreen({ members, setMembers, expenses, packing }){
+  const [name, setName] = useState('')
   const rows = computeSettlements(expenses, members)
   const balance = id => rows.filter(row => row.to === id).reduce((sum, row) => sum + row.amount, 0) - rows.filter(row => row.from === id).reduce((sum, row) => sum + row.amount, 0)
-
-  return <><button className="backRow" onClick={() => setMer('list')}>← Mer</button>{mer === 'dokumenter' && <DocScreen trip={trip}/>} {mer === 'bilder' && <PhotoScreen trip={trip}/>} {mer === 'deltakere' && <><div className="titleRow"><h2>Deltakere</h2><button>+ Inviter</button></div>{members.length ? members.map(member => <div className="member card" key={member.id}><Avatar name={member.name}/><div><b>{member.name}</b><small>{member.role} · Pakket {packing.filter(item => item.assignedTo === member.id && item.packed).length}/{packing.filter(item => item.assignedTo === member.id).length}</small></div><em className={balance(member.id) < 0 ? 'red' : 'green'}>{balance(member.id) === 0 ? 'Oppgjort' : balance(member.id) > 0 ? `Til gode ${formatMoney(balance(member.id))}` : `Skylder ${formatMoney(-balance(member.id))}`}</em></div>) : <Empty title="Ingen deltakere" text="Deltakere vises her når de er lagt inn på turen."/>}</>} {mer === 'kamper' && <><h2>Kamper</h2>{matches.length ? matches.map(match => <div className="match" key={match.id}><div><h3>Sarpsborg FK – {match.opponent}</h3><b>{match.status}</b></div><section><span><b>{match.start}</b>Kampstart</span><span><b>{match.meetup}</b>Oppmøte</span><span><b>{match.venue}</b>Bane</span></section><p>Drakt: {match.kit}</p><button onClick={() => setMatches(matches.map(row => row.id === match.id ? { ...row, status: 'Ferdig', result: 'Registrert' } : row))}>Legg inn resultat</button></div>) : <Empty title="Ingen kamper" text="Legg inn cupkamper med oppmøtetid, bane og draktfarge." action="Legg til kamp"/>}</>} {mer === 'innstillinger' && <><h2>Innstillinger</h2><div className="card info"><p><b>Turnavn</b><span>{trip.title}</span></p><p><b>Lagring</b><span>{trip.source === 'supabase' ? 'Supabase' : 'Demo/lokalt'}</span></p><p><b>Din rolle</b><span>Eier</span></p></div><button className="danger">Slett tur</button></>}</>
+  const add = () => {
+    if(!name.trim()) return
+    setMembers([...members, { id: `member-${Date.now()}`, name: name.trim(), role: 'Deltaker', status: 'active' }])
+    setName('')
+  }
+  return <><div className="titleRow"><h2>Deltakere</h2></div>{members.length ? members.map(member => <div className="member card" key={member.id}><Avatar name={member.name}/><div><b>{member.name}</b><small>{member.role} · Pakket {packing.filter(item => item.assignedTo === member.id && item.packed).length}/{packing.filter(item => item.assignedTo === member.id).length}</small></div><em className={balance(member.id) < 0 ? 'red' : 'green'}>{balance(member.id) === 0 ? 'Oppgjort' : balance(member.id) > 0 ? `Til gode ${formatMoney(balance(member.id))}` : `Skylder ${formatMoney(-balance(member.id))}`}</em></div>) : <Empty title="Ingen deltakere" text="Deltakere vises her når de er lagt inn på turen."/>}<div className="inlineForm"><input value={name} onChange={e => setName(e.target.value)} placeholder="Navn på deltaker"/><div><button onClick={() => setName('')}>Tøm</button><button onClick={add}>Legg til</button></div></div></>
 }
 
-function DocScreen({ trip }){
-  const rows = trip.source === 'supabase' ? [] : documents
-  return <><h2>Dokumenter</h2>{rows.length ? rows.map(document => <div className="doc card" key={document}><FileText size={20}/><div><b>{document}</b><small>PDF · Gjelder: Alle</small></div></div>) : <Empty title="Ingen dokumenter" text="Dokumentopplasting kobles til Supabase Storage i neste patch."/>}<button className="dashed"><Plus size={18}/> Last opp dokument</button></>
+function MatchScreen({ trip, matches, setMatches }){
+  const [adding, setAdding] = useState(false)
+  return <><h2>Kamper</h2>{matches.length ? matches.map(match => <div className="match" key={match.id}><div><h3>{trip.title} – {match.opponent}</h3><b>{match.status}</b></div><section><span><b>{match.start || 'Ikke satt'}</b>Kampstart</span><span><b>{match.meetup || 'Ikke satt'}</b>Oppmøte</span><span><b>{match.venue || 'Ikke satt'}</b>Bane</span></section><p>Drakt: {match.kit || 'Ikke satt'}</p><button onClick={() => setMatches(matches.map(row => row.id === match.id ? { ...row, status: 'Ferdig', result: 'Registrert' } : row))}>Legg inn resultat</button></div>) : <Empty title="Ingen kamper" text="Legg inn cupkamper med oppmøtetid, bane og draktfarge." action="Legg til kamp" onAction={() => setAdding(true)}/>} {!adding && <button className="dashed" onClick={() => setAdding(true)}><Plus size={18}/> Legg til kamp</button>}{adding && <AddMatch matches={matches} setMatches={setMatches} close={() => setAdding(false)}/>}</>
 }
 
-function PhotoScreen({ trip }){
-  const rows = trip.source === 'supabase' ? [] : photos
-  return <><h2>Bilder</h2>{rows.length ? <div className="photoGrid">{rows.map(photo => <div className="photo" key={photo}>{photo}</div>)}</div> : <Empty title="Ingen bilder" text="Bildeopplasting kobles til Supabase Storage i en egen patch."/>}<button className="dashed"><Plus size={18}/> Last opp bilde</button></>
+function AddMatch({ matches, setMatches, close }){
+  const [opponent, setOpponent] = useState('')
+  const [start, setStart] = useState('')
+  const [meetup, setMeetup] = useState('')
+  const [venue, setVenue] = useState('')
+  const [kit, setKit] = useState('')
+  const add = () => {
+    if(!opponent.trim()) return
+    setMatches([...matches, { id: `match-${Date.now()}`, opponent: opponent.trim(), start, meetup, venue: venue.trim(), kit: kit.trim(), status: 'Planlagt', result: '' }])
+    close()
+  }
+  return <div className="inlineForm"><input value={opponent} onChange={e => setOpponent(e.target.value)} placeholder="Motstander"/><div><input type="time" value={start} onChange={e => setStart(e.target.value)}/><input type="time" value={meetup} onChange={e => setMeetup(e.target.value)}/></div><input value={venue} onChange={e => setVenue(e.target.value)} placeholder="Bane/sted"/><input value={kit} onChange={e => setKit(e.target.value)} placeholder="Draktfarge"/><div><button onClick={close}>Avbryt</button><button onClick={add}>Legg til</button></div></div>
+}
+
+function SettingsScreen({ trip, deleteTrip }){
+  return <><h2>Innstillinger</h2><div className="card info"><p><b>Turnavn</b><span>{trip.title}</span></p><p><b>Invitasjonskode</b><span>{trip.inviteCode || 'Ikke laget'}</span></p><p><b>Lagring</b><span>{trip.source === 'local' ? 'Lokal testmodus' : 'Supabase'}</span></p><p><b>Din rolle</b><span>Eier</span></p></div><button className="danger" onClick={deleteTrip}>Slett tur</button></>
+}
+
+function DocScreen({ documents, setDocuments }){
+  const [adding, setAdding] = useState(false)
+  const [title, setTitle] = useState('')
+  const [type, setType] = useState('PDF')
+  const add = () => {
+    if(!title.trim()) return
+    setDocuments([...documents, { id: `doc-${Date.now()}`, title: title.trim(), type }])
+    setTitle('')
+    setAdding(false)
+  }
+  return <><h2>Dokumenter</h2>{documents.length ? documents.map(document => <div className="doc card" key={document.id}><FileText size={20}/><div><b>{document.title}</b><small>{document.type} · Gjelder: Alle</small></div></div>) : <Empty title="Ingen dokumenter" text="Legg inn dokumentnavn for å teste dokumentflyten." action="Legg til dokument" onAction={() => setAdding(true)}/>} {!adding && <button className="dashed" onClick={() => setAdding(true)}><Plus size={18}/> Legg til dokument</button>}{adding && <div className="inlineForm"><input value={title} onChange={e => setTitle(e.target.value)} placeholder="Dokumentnavn"/><select value={type} onChange={e => setType(e.target.value)}><option>PDF</option><option>Bilde</option><option>Lenke</option><option>Annet</option></select><div><button onClick={() => setAdding(false)}>Avbryt</button><button onClick={add}>Legg til</button></div></div>}</>
+}
+
+function PhotoScreen({ photos, setPhotos }){
+  const [adding, setAdding] = useState(false)
+  const [caption, setCaption] = useState('')
+  const add = () => {
+    if(!caption.trim()) return
+    setPhotos([...photos, { id: `photo-${Date.now()}`, caption: caption.trim() }])
+    setCaption('')
+    setAdding(false)
+  }
+  return <><h2>Bilder</h2>{photos.length ? <div className="photoGrid">{photos.map(photo => <div className="photo" key={photo.id}>{photo.caption}</div>)}</div> : <Empty title="Ingen bilder" text="Legg inn bildenavn/tekst for å teste bildeflyten." action="Legg til bilde" onAction={() => setAdding(true)}/>} {!adding && <button className="dashed" onClick={() => setAdding(true)}><Plus size={18}/> Legg til bilde</button>}{adding && <div className="inlineForm"><input value={caption} onChange={e => setCaption(e.target.value)} placeholder="Bildetekst eller filnavn"/><div><button onClick={() => setAdding(false)}>Avbryt</button><button onClick={add}>Legg til</button></div></div>}</>
 }
 
 function Empty({ title, text, action, onAction }){
