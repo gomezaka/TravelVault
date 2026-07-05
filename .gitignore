@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.vite/
+.netlify/
+.vscode/
+
+.env
+.env.local
+.env.*.local
+
+*.log
+.DS_Store
