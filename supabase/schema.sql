@@ -163,3 +163,20 @@ create policy "owners can update trips" on public.trips for update using (owner_
 
 -- Helper pattern for child tables: trip member can read/write within own trips.
 -- For production, split admin/participant rights per table.
+
+-- Policyer for turmedlemmer brukt av MVP-lagring av nye turer.
+create policy "members can read own trip memberships" on public.trip_members for select using (
+  user_id = auth.uid()
+  or exists (select 1 from public.trips t where t.id = trip_members.trip_id and t.owner_id = auth.uid())
+);
+create policy "trip owners can insert trip members" on public.trip_members for insert with check (
+  exists (select 1 from public.trips t where t.id = trip_members.trip_id and t.owner_id = auth.uid())
+);
+create policy "trip owners can update trip members" on public.trip_members for update using (
+  exists (select 1 from public.trips t where t.id = trip_members.trip_id and t.owner_id = auth.uid())
+) with check (
+  exists (select 1 from public.trips t where t.id = trip_members.trip_id and t.owner_id = auth.uid())
+);
+create policy "trip owners can delete trip members" on public.trip_members for delete using (
+  exists (select 1 from public.trips t where t.id = trip_members.trip_id and t.owner_id = auth.uid())
+);
