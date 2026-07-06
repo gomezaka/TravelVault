@@ -15,9 +15,12 @@ const tabs = [
 ]
 const categories = ['Dokumenter', 'Klær', 'Hygiene', 'Elektronikk', 'Mat/snacks', 'Sport/cup', 'Barn', 'Diverse']
 const emptyTripContent = { members: [], events: [], packing: [], expenses: [], matches: [] }
-const authEnabled = import.meta.env.VITE_ENABLE_AUTH === 'true'
-const googleAuthEnabled = import.meta.env.VITE_ENABLE_GOOGLE_AUTH === 'true'
+const authLockedForTesting = true
+const authEnabled = !authLockedForTesting && import.meta.env.VITE_ENABLE_AUTH === 'true'
+const googleAuthEnabled = !authLockedForTesting && import.meta.env.VITE_ENABLE_GOOGLE_AUTH === 'true'
 const testStateKey = 'travelvault-test-state-v1'
+const legacyDemoTripIds = new Set(['danmark-cup-2027', 'italia-2027', 'sverige-2025'])
+const legacyDemoTripTitles = new Set(['Danmark Cup 2027', 'Italia sommerferie', 'Sverige høsttur 2025'])
 
 function formatMoney(n){ return `${Math.round(n).toLocaleString('nb-NO')} kr` }
 function initials(name){ return (name || '?').split(' ').map(x => x[0]).join('').slice(0, 2).toUpperCase() }
@@ -33,9 +36,15 @@ function emptyTripDetails(members = []){
 function loadTestState(){
   try{
     const parsed = JSON.parse(window.localStorage.getItem(testStateKey) || '{}')
+    const trips = Array.isArray(parsed.trips)
+      ? parsed.trips.filter(trip => !legacyDemoTripIds.has(trip.id) && !legacyDemoTripTitles.has(trip.title))
+      : []
+    const detailsByTrip = parsed.detailsByTrip && typeof parsed.detailsByTrip === 'object'
+      ? Object.fromEntries(Object.entries(parsed.detailsByTrip).filter(([tripId]) => !legacyDemoTripIds.has(tripId)))
+      : {}
     return {
-      trips: Array.isArray(parsed.trips) ? parsed.trips : [],
-      detailsByTrip: parsed.detailsByTrip && typeof parsed.detailsByTrip === 'object' ? parsed.detailsByTrip : {}
+      trips,
+      detailsByTrip
     }
   }catch{
     return { trips: [], detailsByTrip: {} }

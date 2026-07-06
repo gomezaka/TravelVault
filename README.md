@@ -19,7 +19,7 @@ npm install
 npm run dev
 ```
 
-Appen starter som standard i lokal testmodus uten innlogging. Data lagres i nettleserens `localStorage`, slik at du kan opprette turer, deltakere og ulike pakkelister uten Supabase.
+Appen starter nå i lokal testmodus uten innlogging. Data lagres i nettleserens `localStorage`, slik at du kan opprette turer, deltakere og ulike pakkelister uten Supabase.
 
 ## Testmodus
 
@@ -29,6 +29,8 @@ Testmodus er styrt av:
 VITE_ENABLE_AUTH=false
 VITE_ENABLE_GOOGLE_AUTH=false
 ```
+
+I tillegg er auth midlertidig låst av i `src/main.jsx` med `authLockedForTesting = true`. Det gjør at gamle Netlify-variabler ikke kan slå innlogging på igjen før vi bevisst fjerner testlåsen.
 
 I testmodus kan du:
 
@@ -40,7 +42,8 @@ I testmodus kan du:
 
 ## Koble til Supabase senere
 
-1. Opprett eller oppdater `.env.local` i prosjektroten:
+1. Sett `authLockedForTesting = false` i `src/main.jsx`.
+2. Opprett eller oppdater `.env.local` i prosjektroten:
 
 ```env
 VITE_SUPABASE_URL=https://DIN-PROSJEKTREF.supabase.co
@@ -49,12 +52,12 @@ VITE_ENABLE_AUTH=true
 VITE_ENABLE_GOOGLE_AUTH=false
 ```
 
-2. I Supabase: Project Settings -> API. Kopier `Project URL` og publishable/anon public key.
-3. I Supabase: Authentication -> URL Configuration:
+3. I Supabase: Project Settings -> API. Kopier `Project URL` og publishable/anon public key.
+4. I Supabase: Authentication -> URL Configuration:
    - Site URL lokalt: `http://localhost:5173`
    - Redirect URL lokalt: `http://localhost:5173`
    - Når Netlify er klar: legg også inn Netlify-URL-en.
-4. Kjør SQL:
+5. Kjør SQL:
    - `supabase/schema.sql`
    - `supabase/02_storage.sql`
    - `supabase/03_trip_persistence.sql`
