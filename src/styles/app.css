@@ -21,3 +21,9 @@
 .moreList .iconTile{flex:0 0 38px;width:38px;height:38px}
 .moreList button>span:not(.iconTile){flex:1;text-align:left}
 @media(max-width:520px){.screen{height:100vh}}
+.eventDetails button{border:0;border-radius:999px;background:oklch(95% .012 75);padding:7px 10px;font-weight:800;color:oklch(24% .02 60)}
+.eventCard{cursor:pointer}
+.checkButton{width:23px;height:23px;border-radius:7px;border:2px solid oklch(78% .018 75);background:#fff;display:grid;place-items:center;font-size:13px;font-weight:900;flex:0 0 23px;color:white;padding:0}.checkButton.checked{background:oklch(58% .11 150);border-color:oklch(58% .11 150)}
+.rowAction{border:0;border-radius:999px;background:oklch(94% .06 25);color:oklch(45% .15 25);padding:6px 9px;font-size:11px;font-weight:900;flex:0 0 auto}.rowButtons{display:flex;gap:8px;margin-top:10px}.rowButtons button{flex:1}
+.checkRow{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:800;color:oklch(52% .02 60)}.checkRow input{width:auto}
+.photo{border:0;text-align:left}

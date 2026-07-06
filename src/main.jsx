@@ -295,6 +295,16 @@ function App({ session, testMode = false }){
     }))
   }, [testMode, activeTrip, members, events, packing, expenses, matches, documents, photos])
 
+  useEffect(() => {
+    if(!testMode || !activeTrip) return
+    const nextEvent = events[0]
+    const nextMatch = matches[0]
+    const next = nextEvent ? `${nextEvent.title}${nextEvent.time && nextEvent.time !== 'Ikke satt' ? ` kl. ${nextEvent.time}` : ''}` : nextMatch ? `Kamp mot ${nextMatch.opponent}${nextMatch.start ? ` kl. ${nextMatch.start}` : ''}` : 'Legg til første hendelse'
+    const memberCount = Math.max(1, members.length)
+    setActiveTrip(current => current && current.id === activeTrip.id ? { ...current, members: memberCount, next } : current)
+    setTrips(current => current.map(trip => trip.id === activeTrip.id ? { ...trip, members: memberCount, next } : trip))
+  }, [testMode, activeTrip?.id, members, events, matches])
+
   const resetContentForTrip = () => {
     setMembers(emptyTripContent.members)
     setEvents(emptyTripContent.events)
@@ -528,7 +538,7 @@ function PlanView({ events, setEvents }){
   const [open, setOpen] = useState(null)
   const [adding, setAdding] = useState(false)
   const days = [...new Set(events.map(event => event.day))]
-  return <>{!events.length && <Empty title="Ingen planpunkter" text="Legg inn fly, hotell, aktivitet eller oppmøte." action="Legg til planpunkt" onAction={() => setAdding(true)}/>} {days.map(day => <div key={day}><h2 className="dayTitle">{day}</h2>{events.filter(event => event.day === day).map(event => <EventCard key={event.id} event={event} open={open === event.id} onClick={() => setOpen(open === event.id ? null : event.id)}/>)}</div>)}{!adding && <button className="dashed" onClick={() => setAdding(true)}><Plus size={18}/> Legg til planpunkt</button>}{adding && <AddEvent events={events} setEvents={setEvents} close={() => setAdding(false)}/>}</>
+  return <>{!events.length && <Empty title="Ingen planpunkter" text="Legg inn fly, hotell, aktivitet eller oppmøte." action="Legg til planpunkt" onAction={() => setAdding(true)}/>} {days.map(day => <div key={day}><h2 className="dayTitle">{day}</h2>{events.filter(event => event.day === day).map(event => <EventCard key={event.id} event={event} events={events} setEvents={setEvents} open={open === event.id} onClick={() => setOpen(open === event.id ? null : event.id)}/>)}</div>)}{!adding && <button className="dashed" onClick={() => setAdding(true)}><Plus size={18}/> Legg til planpunkt</button>}{adding && <AddEvent events={events} setEvents={setEvents} close={() => setAdding(false)}/>}</>
 }
 
 function AddEvent({ events, setEvents, close }){
@@ -556,9 +566,21 @@ function AddEvent({ events, setEvents, close }){
   return <div className="inlineForm"><input value={title} onChange={e => setTitle(e.target.value)} placeholder="Tittel"/><div><input type="date" value={date} onChange={e => setDate(e.target.value)}/><input type="time" value={time} onChange={e => setTime(e.target.value)}/></div><input value={place} onChange={e => setPlace(e.target.value)} placeholder="Sted"/><select value={type} onChange={e => setType(e.target.value)}><option value="activity">Aktivitet</option><option value="flight">Fly</option><option value="transport">Transport</option><option value="hotel">Hotell</option><option value="match">Kamp</option><option value="food">Mat</option></select><textarea value={note} onChange={e => setNote(e.target.value)} placeholder="Notat"/><div><button onClick={close}>Avbryt</button><button onClick={add}>Legg til</button></div></div>
 }
 
-function EventCard({ event, open, onClick }){
+function EventCard({ event, events, setEvents, open, onClick }){
   const Icon = iconMap[event.type] || CalendarDays
-  return <button className="eventCard" onClick={onClick}><div className="eventTop"><span className="iconTile"><Icon size={18}/></span><div><h3>{event.title}</h3><p>{event.time} · {event.place}</p></div><b className="status">{event.status}</b></div>{open && <div className="eventDetails"><p>{event.note}</p>{event.document && <small>Dokument: {event.document}</small>}<div><span>Rediger</span><span>Åpne kart</span></div></div>}</button>
+  const edit = (clickEvent) => {
+    clickEvent.stopPropagation()
+    const nextTitle = window.prompt('Tittel', event.title)
+    if(nextTitle === null || !nextTitle.trim()) return
+    const nextPlace = window.prompt('Sted', event.place) ?? event.place
+    const nextNote = window.prompt('Notat', event.note) ?? event.note
+    setEvents(events.map(row => row.id === event.id ? { ...row, title: nextTitle.trim(), place: nextPlace.trim() || 'Ikke satt', note: nextNote.trim() || 'Ingen notat.' } : row))
+  }
+  const openMap = (clickEvent) => {
+    clickEvent.stopPropagation()
+    if(event.place && event.place !== 'Ikke satt') window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(event.place)}`, '_blank', 'noopener,noreferrer')
+  }
+  return <div className="eventCard" onClick={onClick} role="button" tabIndex={0} onKeyDown={keyEvent => { if(keyEvent.key === 'Enter' || keyEvent.key === ' ') onClick() }}><div className="eventTop"><span className="iconTile"><Icon size={18}/></span><div><h3>{event.title}</h3><p>{event.time} · {event.place}</p></div><b className="status">{event.status}</b></div>{open && <div className="eventDetails"><p>{event.note}</p>{event.document && <small>Dokument: {event.document}</small>}<div><button onClick={edit} type="button">Rediger</button><button onClick={openMap} type="button">Åpne kart</button></div></div>}</div>
 }
 
 function PackingView({ members, packing, setPacking }){
@@ -566,11 +588,15 @@ function PackingView({ members, packing, setPacking }){
   const [adding, setAdding] = useState(false)
   const [title, setTitle] = useState('')
   const [category, setCategory] = useState(categories[0])
+  const [assignedTo, setAssignedTo] = useState('')
+  const [mustBuy, setMustBuy] = useState(false)
   const visible = packing.filter(item => filter === 'Alle' || (filter === 'Mangler' && !item.packed) || (filter === 'Pakket' && item.packed) || (filter === 'Må kjøpes' && item.mustBuy))
   const add = () => {
     if(title.trim()){
-      setPacking([...packing, { id: `p${Date.now()}`, title, category, assignedTo: null, packed: false, mustBuy: false }])
+      setPacking([...packing, { id: `p${Date.now()}`, title, category, assignedTo: assignedTo || null, packed: false, mustBuy }])
       setTitle('')
+      setAssignedTo('')
+      setMustBuy(false)
       setAdding(false)
     }
   }
@@ -580,22 +606,22 @@ function PackingView({ members, packing, setPacking }){
     setPacking([...packing, ...names.filter(name => !existing.has(name)).map((name, index) => ({ id: `std-${Date.now()}-${index}`, title: name, category: 'Sport/cup', assignedTo: null, packed: false, mustBuy: false }))])
   }
 
-  return <><div className="chips">{['Alle', 'Mangler', 'Pakket', 'Må kjøpes'].map(item => <button className={filter === item ? 'active' : ''} onClick={() => setFilter(item)} key={item}>{item}</button>)}</div>{!packing.length && <Empty title="Pakkelisten er tom" text="Legg til det dere må huske, eller start med en standardliste." action="Bruk standardliste" onAction={addStd}/>} {packing.length > 0 && <><h2 className="sectionTitle">Felles pakkeliste</h2>{visible.filter(item => !item.assignedTo).map(item => <PackRow key={item.id} item={item} setPacking={setPacking} packing={packing}/>) }{members.map(member => { const rows = visible.filter(item => item.assignedTo === member.id); return rows.length ? <div key={member.id}><h2 className="sectionTitle">{member.name}</h2>{rows.map(item => <PackRow key={item.id} item={item} setPacking={setPacking} packing={packing}/>)}</div> : null })}</>}{!adding && <button className="dashed" onClick={() => setAdding(true)}><Plus size={18}/> Legg til punkt</button>}{adding && <div className="inlineForm"><input value={title} onChange={e => setTitle(e.target.value)} placeholder="Hva må pakkes?"/><select value={category} onChange={e => setCategory(e.target.value)}>{categories.map(item => <option key={item}>{item}</option>)}</select><div><button onClick={() => setAdding(false)}>Avbryt</button><button onClick={add}>Legg til</button></div></div>}</>
+  return <><div className="chips">{['Alle', 'Mangler', 'Pakket', 'Må kjøpes'].map(item => <button className={filter === item ? 'active' : ''} onClick={() => setFilter(item)} key={item}>{item}</button>)}</div>{!packing.length && <Empty title="Pakkelisten er tom" text="Legg til det dere må huske, eller start med en standardliste." action="Bruk standardliste" onAction={addStd}/>} {packing.length > 0 && <><h2 className="sectionTitle">Felles pakkeliste</h2>{visible.filter(item => !item.assignedTo).map(item => <PackRow key={item.id} item={item} setPacking={setPacking} packing={packing}/>) }{members.map(member => { const rows = visible.filter(item => item.assignedTo === member.id); return rows.length ? <div key={member.id}><h2 className="sectionTitle">{member.name}</h2>{rows.map(item => <PackRow key={item.id} item={item} setPacking={setPacking} packing={packing}/>)}</div> : null })}</>}{!adding && <button className="dashed" onClick={() => setAdding(true)}><Plus size={18}/> Legg til punkt</button>}{adding && <div className="inlineForm"><input value={title} onChange={e => setTitle(e.target.value)} placeholder="Hva må pakkes?"/><select value={category} onChange={e => setCategory(e.target.value)}>{categories.map(item => <option key={item}>{item}</option>)}</select><select value={assignedTo} onChange={e => setAssignedTo(e.target.value)}><option value="">Felles pakkeliste</option>{members.map(member => <option value={member.id} key={member.id}>{member.name}</option>)}</select><label className="checkRow"><input type="checkbox" checked={mustBuy} onChange={e => setMustBuy(e.target.checked)}/><span>Må kjøpes</span></label><div><button onClick={() => setAdding(false)}>Avbryt</button><button onClick={add}>Legg til</button></div></div>}</>
 }
 
 function PackRow({ item, packing, setPacking }){
-  return <button className="packRow" onClick={() => setPacking(packing.map(row => row.id === item.id ? { ...row, packed: !row.packed } : row))}><span className={item.packed ? 'checked' : ''}>{item.packed ? '✓' : ''}</span><div><b className={item.packed ? 'done' : ''}>{item.title}</b><small>{item.category}</small></div>{item.mustBuy && <em>Må kjøpes</em>}</button>
+  return <div className="packRow"><button className={`checkButton ${item.packed ? 'checked' : ''}`} onClick={() => setPacking(packing.map(row => row.id === item.id ? { ...row, packed: !row.packed } : row))} type="button">{item.packed ? '✓' : ''}</button><div><b className={item.packed ? 'done' : ''}>{item.title}</b><small>{item.category}</small></div>{item.mustBuy && <em>Må kjøpes</em>}<button className="rowAction" onClick={() => setPacking(packing.filter(row => row.id !== item.id))} type="button">Fjern</button></div>
 }
 
 function ExpensesView({ members, expenses, setExpenses }){
   const [settlement, setSettlement] = useState(false)
   const total = expenses.reduce((sum, expense) => sum + expense.amount, 0)
   if(settlement) return <SettlementView members={members} expenses={expenses} back={() => setSettlement(false)}/>
-  return <><button className="summary" onClick={() => setSettlement(true)}><div><span>Totalt brukt</span><b>{formatMoney(total)}</b></div><em>Se oppgjør →</em></button>{!expenses.length && <Empty title="Ingen utlegg ennå" text="Når noen betaler for noe på turen, legger dere det inn her." action="Legg til utlegg"/>}{expenses.map(expense => <ExpenseCard key={expense.id} expense={expense} members={members}/>) }<AddExpense members={members} expenses={expenses} setExpenses={setExpenses}/></>
+  return <><button className="summary" onClick={() => setSettlement(true)}><div><span>Totalt brukt</span><b>{formatMoney(total)}</b></div><em>Se oppgjør →</em></button>{!expenses.length && <Empty title="Ingen utlegg ennå" text="Når noen betaler for noe på turen, legger dere det inn her." action="Legg til utlegg"/>}{expenses.map(expense => <ExpenseCard key={expense.id} expense={expense} members={members} expenses={expenses} setExpenses={setExpenses}/>) }<AddExpense members={members} expenses={expenses} setExpenses={setExpenses}/></>
 }
 
-function ExpenseCard({ expense, members }){
-  return <div className="expense"><div><h3>{expense.title}</h3><b>{formatMoney(expense.amount)}</b></div><p>Betalt av {members.find(member => member.id === expense.paidBy)?.name || 'Ukjent'} · Delt mellom {expense.participants?.length || 0} personer</p><span>{expense.category}</span><em>{expense.status}</em></div>
+function ExpenseCard({ expense, members, expenses, setExpenses }){
+  return <div className="expense"><div><h3>{expense.title}</h3><b>{formatMoney(expense.amount)}</b></div><p>Betalt av {members.find(member => member.id === expense.paidBy)?.name || 'Ukjent'} · Delt mellom {expense.participants?.length || 0} personer</p><span>{expense.category}</span><em>{expense.status}</em><button className="rowAction" onClick={() => setExpenses(expenses.filter(row => row.id !== expense.id))} type="button">Fjern</button></div>
 }
 
 function AddExpense({ members, expenses, setExpenses }){
@@ -651,7 +677,7 @@ function SubScreen(props){
   return <><button className="backRow" onClick={() => setMer('list')}>← Mer</button>{mer === 'dokumenter' && <DocScreen documents={props.documents} setDocuments={props.setDocuments}/>} {mer === 'bilder' && <PhotoScreen photos={props.photos} setPhotos={props.setPhotos}/>} {mer === 'deltakere' && <ParticipantsScreen {...props}/>} {mer === 'kamper' && <MatchScreen {...props}/>} {mer === 'innstillinger' && <SettingsScreen trip={props.trip} deleteTrip={props.deleteTrip}/>}</>
 }
 
-function ParticipantsScreen({ members, setMembers, expenses, packing }){
+function ParticipantsScreen({ members, setMembers, expenses, setExpenses, packing, setPacking }){
   const [name, setName] = useState('')
   const rows = computeSettlements(expenses, members)
   const balance = id => rows.filter(row => row.to === id).reduce((sum, row) => sum + row.amount, 0) - rows.filter(row => row.from === id).reduce((sum, row) => sum + row.amount, 0)
@@ -660,12 +686,27 @@ function ParticipantsScreen({ members, setMembers, expenses, packing }){
     setMembers([...members, { id: `member-${Date.now()}`, name: name.trim(), role: 'Deltaker', status: 'active' }])
     setName('')
   }
-  return <><div className="titleRow"><h2>Deltakere</h2></div>{members.length ? members.map(member => <div className="member card" key={member.id}><Avatar name={member.name}/><div><b>{member.name}</b><small>{member.role} · Pakket {packing.filter(item => item.assignedTo === member.id && item.packed).length}/{packing.filter(item => item.assignedTo === member.id).length}</small></div><em className={balance(member.id) < 0 ? 'red' : 'green'}>{balance(member.id) === 0 ? 'Oppgjort' : balance(member.id) > 0 ? `Til gode ${formatMoney(balance(member.id))}` : `Skylder ${formatMoney(-balance(member.id))}`}</em></div>) : <Empty title="Ingen deltakere" text="Deltakere vises her når de er lagt inn på turen."/>}<div className="inlineForm"><input value={name} onChange={e => setName(e.target.value)} placeholder="Navn på deltaker"/><div><button onClick={() => setName('')}>Tøm</button><button onClick={add}>Legg til</button></div></div></>
+  const remove = (memberId) => {
+    if(members.length <= 1) return
+    const fallbackMember = members.find(member => member.id !== memberId)
+    const fallback = fallbackMember?.id
+    setMembers(members.filter(member => member.id !== memberId))
+    setPacking(packing.map(item => item.assignedTo === memberId ? { ...item, assignedTo: null } : item))
+    setExpenses(expenses.map(expense => {
+      const participants = expense.participants?.filter(id => id !== memberId) || []
+      return {
+        ...expense,
+        paidBy: expense.paidBy === memberId ? fallback : expense.paidBy,
+        participants: participants.length ? participants : fallback ? [fallback] : []
+      }
+    }))
+  }
+  return <><div className="titleRow"><h2>Deltakere</h2></div>{members.length ? members.map(member => <div className="member card" key={member.id}><Avatar name={member.name}/><div><b>{member.name}</b><small>{member.role} · Pakket {packing.filter(item => item.assignedTo === member.id && item.packed).length}/{packing.filter(item => item.assignedTo === member.id).length}</small></div><em className={balance(member.id) < 0 ? 'red' : 'green'}>{balance(member.id) === 0 ? 'Oppgjort' : balance(member.id) > 0 ? `Til gode ${formatMoney(balance(member.id))}` : `Skylder ${formatMoney(-balance(member.id))}`}</em>{members.length > 1 && <button className="rowAction" onClick={() => remove(member.id)} type="button">Fjern</button>}</div>) : <Empty title="Ingen deltakere" text="Deltakere vises her når de er lagt inn på turen."/>}<div className="inlineForm"><input value={name} onChange={e => setName(e.target.value)} placeholder="Navn på deltaker"/><div><button onClick={() => setName('')}>Tøm</button><button onClick={add}>Legg til</button></div></div></>
 }
 
 function MatchScreen({ trip, matches, setMatches }){
   const [adding, setAdding] = useState(false)
-  return <><h2>Kamper</h2>{matches.length ? matches.map(match => <div className="match" key={match.id}><div><h3>{trip.title} – {match.opponent}</h3><b>{match.status}</b></div><section><span><b>{match.start || 'Ikke satt'}</b>Kampstart</span><span><b>{match.meetup || 'Ikke satt'}</b>Oppmøte</span><span><b>{match.venue || 'Ikke satt'}</b>Bane</span></section><p>Drakt: {match.kit || 'Ikke satt'}</p><button onClick={() => setMatches(matches.map(row => row.id === match.id ? { ...row, status: 'Ferdig', result: 'Registrert' } : row))}>Legg inn resultat</button></div>) : <Empty title="Ingen kamper" text="Legg inn cupkamper med oppmøtetid, bane og draktfarge." action="Legg til kamp" onAction={() => setAdding(true)}/>} {!adding && <button className="dashed" onClick={() => setAdding(true)}><Plus size={18}/> Legg til kamp</button>}{adding && <AddMatch matches={matches} setMatches={setMatches} close={() => setAdding(false)}/>}</>
+  return <><h2>Kamper</h2>{matches.length ? matches.map(match => <div className="match" key={match.id}><div><h3>{trip.title} – {match.opponent}</h3><b>{match.status}</b></div><section><span><b>{match.start || 'Ikke satt'}</b>Kampstart</span><span><b>{match.meetup || 'Ikke satt'}</b>Oppmøte</span><span><b>{match.venue || 'Ikke satt'}</b>Bane</span></section><p>Drakt: {match.kit || 'Ikke satt'}</p><div className="rowButtons"><button onClick={() => setMatches(matches.map(row => row.id === match.id ? { ...row, status: 'Ferdig', result: 'Registrert' } : row))}>Legg inn resultat</button><button onClick={() => setMatches(matches.filter(row => row.id !== match.id))}>Fjern</button></div></div>) : <Empty title="Ingen kamper" text="Legg inn cupkamper med oppmøtetid, bane og draktfarge." action="Legg til kamp" onAction={() => setAdding(true)}/>} {!adding && <button className="dashed" onClick={() => setAdding(true)}><Plus size={18}/> Legg til kamp</button>}{adding && <AddMatch matches={matches} setMatches={setMatches} close={() => setAdding(false)}/>}</>
 }
 
 function AddMatch({ matches, setMatches, close }){
@@ -696,7 +737,7 @@ function DocScreen({ documents, setDocuments }){
     setTitle('')
     setAdding(false)
   }
-  return <><h2>Dokumenter</h2>{documents.length ? documents.map(document => <div className="doc card" key={document.id}><FileText size={20}/><div><b>{document.title}</b><small>{document.type} · Gjelder: Alle</small></div></div>) : <Empty title="Ingen dokumenter" text="Legg inn dokumentnavn for å teste dokumentflyten." action="Legg til dokument" onAction={() => setAdding(true)}/>} {!adding && <button className="dashed" onClick={() => setAdding(true)}><Plus size={18}/> Legg til dokument</button>}{adding && <div className="inlineForm"><input value={title} onChange={e => setTitle(e.target.value)} placeholder="Dokumentnavn"/><select value={type} onChange={e => setType(e.target.value)}><option>PDF</option><option>Bilde</option><option>Lenke</option><option>Annet</option></select><div><button onClick={() => setAdding(false)}>Avbryt</button><button onClick={add}>Legg til</button></div></div>}</>
+  return <><h2>Dokumenter</h2>{documents.length ? documents.map(document => <div className="doc card" key={document.id}><FileText size={20}/><div><b>{document.title}</b><small>{document.type} · Gjelder: Alle</small></div><button className="rowAction" onClick={() => setDocuments(documents.filter(row => row.id !== document.id))} type="button">Fjern</button></div>) : <Empty title="Ingen dokumenter" text="Legg inn dokumentnavn for å teste dokumentflyten." action="Legg til dokument" onAction={() => setAdding(true)}/>} {!adding && <button className="dashed" onClick={() => setAdding(true)}><Plus size={18}/> Legg til dokument</button>}{adding && <div className="inlineForm"><input value={title} onChange={e => setTitle(e.target.value)} placeholder="Dokumentnavn"/><select value={type} onChange={e => setType(e.target.value)}><option>PDF</option><option>Bilde</option><option>Lenke</option><option>Annet</option></select><div><button onClick={() => setAdding(false)}>Avbryt</button><button onClick={add}>Legg til</button></div></div>}</>
 }
 
 function PhotoScreen({ photos, setPhotos }){
@@ -708,11 +749,11 @@ function PhotoScreen({ photos, setPhotos }){
     setCaption('')
     setAdding(false)
   }
-  return <><h2>Bilder</h2>{photos.length ? <div className="photoGrid">{photos.map(photo => <div className="photo" key={photo.id}>{photo.caption}</div>)}</div> : <Empty title="Ingen bilder" text="Legg inn bildenavn/tekst for å teste bildeflyten." action="Legg til bilde" onAction={() => setAdding(true)}/>} {!adding && <button className="dashed" onClick={() => setAdding(true)}><Plus size={18}/> Legg til bilde</button>}{adding && <div className="inlineForm"><input value={caption} onChange={e => setCaption(e.target.value)} placeholder="Bildetekst eller filnavn"/><div><button onClick={() => setAdding(false)}>Avbryt</button><button onClick={add}>Legg til</button></div></div>}</>
+  return <><h2>Bilder</h2>{photos.length ? <div className="photoGrid">{photos.map(photo => <button className="photo" key={photo.id} onClick={() => setPhotos(photos.filter(row => row.id !== photo.id))} title="Fjern bilde">{photo.caption}</button>)}</div> : <Empty title="Ingen bilder" text="Legg inn bildenavn/tekst for å teste bildeflyten." action="Legg til bilde" onAction={() => setAdding(true)}/>} {!adding && <button className="dashed" onClick={() => setAdding(true)}><Plus size={18}/> Legg til bilde</button>}{adding && <div className="inlineForm"><input value={caption} onChange={e => setCaption(e.target.value)} placeholder="Bildetekst eller filnavn"/><div><button onClick={() => setAdding(false)}>Avbryt</button><button onClick={add}>Legg til</button></div></div>}</>
 }
 
 function Empty({ title, text, action, onAction }){
-  return <div className="empty"><h3>{title}</h3><p>{text}</p>{action && <button onClick={onAction}>{action}</button>}</div>
+  return <div className="empty"><h3>{title}</h3><p>{text}</p>{action && onAction && <button onClick={onAction}>{action}</button>}</div>
 }
 
 function Avatar({ name }){
