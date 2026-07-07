@@ -1,0 +1,11 @@
+{
+  "patch_id": "app_patch_TravelVault_20260707_cleanup_currency_family",
+  "project": "TravelVault",
+  "description": "Rydder dokumentimport, normal pakkeliste, chat, valuta i utlegg, desktop sidemeny, Min familie-design og Travelvault-logo i visninger.",
+  "files": [
+    "src/main.jsx",
+    "src/styles/app.css",
+    "PATCH_NOTES_TRAVELVAULT_CLEANUP_CURRENCY_FAMILY.md"
+  ],
+  "delete": []
+}

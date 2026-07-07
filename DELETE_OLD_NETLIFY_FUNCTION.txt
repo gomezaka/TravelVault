@@ -1,0 +1,7 @@
+Slett gammel fil fra forrige patch hvis den finnes:
+
+netlify/functions/invite-family-member.js
+
+Den brukes ikke lenger. E-postinvitasjoner går nå via Supabase Edge Function:
+
+supabase/functions/send-family-invite/index.ts
