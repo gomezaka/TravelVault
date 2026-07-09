@@ -338,3 +338,140 @@ body{background:#d8dde4}
   .familyGrid{grid-template-columns:1fr}
   .eventEditForm .two{grid-template-columns:1fr}
 }
+
+/* --- Family app layer: shared home, calendar, chat and shopping --- */
+.familyHomeScreen .content{padding-bottom:176px}
+.familyHomeTop{display:flex;align-items:center;justify-content:space-between;gap:14px}
+.familyHomeContent{gap:24px}
+.familyActionGrid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px}
+.familyHomeTile{border:1px solid var(--tv-line);background:#fff;border-radius:22px;padding:16px;text-align:left;display:flex;flex-direction:column;gap:10px;color:var(--tv-text);box-shadow:0 8px 20px rgb(46 37 27 / 4%)}
+.familyHomeTile .iconTile{width:42px;height:42px;border-radius:14px;background:var(--tv-accent-soft);color:var(--tv-accent)}
+.familyHomeTile b{font-size:16px}
+.familyHomeTile small{color:var(--tv-muted);line-height:1.35}
+.familyHomeGrid{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(280px,.8fr);gap:22px;align-items:start}
+.familyPanel,.compactPanel{padding:22px}
+.compactPanel{display:flex;flex-direction:column;gap:12px}
+.agendaList{display:flex;flex-direction:column;gap:10px}
+.agendaRow{width:100%;border:1px solid var(--tv-line);background:#fff;border-radius:16px;padding:14px;display:grid;grid-template-columns:90px minmax(0,1fr) auto;gap:12px;align-items:center;text-align:left;color:inherit}
+.agendaRow>span{font-weight:900;color:var(--tv-accent)}
+.agendaRow b{display:block;color:var(--tv-text);font-size:15px;margin-bottom:2px}
+.agendaRow small{display:block;color:var(--tv-muted);font-size:12px;line-height:1.35}
+.agendaRow em{font-style:normal;border-radius:999px;background:var(--tv-blue-soft);color:#365991;padding:5px 8px;font-size:11px;font-weight:900;white-space:nowrap}
+.miniComposer{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center}
+.miniComposer input{min-height:44px}
+.miniComposer button{border:0;border-radius:12px;background:var(--tv-accent);color:#fff;font-weight:900;padding:11px 13px;white-space:nowrap}
+.familyMiniRow{display:flex;align-items:center;gap:10px;background:#fff;border:1px solid var(--tv-line);border-radius:14px;padding:10px 12px}
+.familyMiniRow span{font-weight:800;flex:1}
+.familyMessagePreview{background:#fff;border:1px solid var(--tv-line);border-radius:14px;padding:12px}
+.familyMessagePreview b{display:block;font-size:12px;margin-bottom:4px;color:var(--tv-accent)}
+.familyMessagePreview p{margin:0;color:var(--tv-text);line-height:1.35}
+.householdListRow{display:flex;gap:12px;align-items:center;background:#fff;border:1px solid var(--tv-line);border-radius:16px;padding:14px;margin-bottom:10px}
+.householdListRow div{flex:1;min-width:0}
+.householdListRow b{display:block;color:var(--tv-text)}
+.householdListRow b.done{text-decoration:line-through;color:#948a7e}
+.householdListRow small{display:block;color:var(--tv-muted);font-size:12px;margin-top:2px}
+.calendarIntegration{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
+.calendarIntegration h2{margin:0 0 6px;color:var(--tv-text)}
+.calendarIntegration p{margin:0;color:var(--tv-muted);line-height:1.45}
+.integrationBadges{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end}
+.integrationBadges span{border-radius:999px;background:var(--tv-yellow-soft);color:#795d10;padding:7px 10px;font-size:12px;font-weight:900;white-space:nowrap}
+.familyCalendarForm.expanded{border:1px solid var(--tv-line);background:#fff;padding:14px}
+.calendarFullRow{grid-template-columns:1fr auto;padding:0;border:0;background:transparent}
+.calendarFullRow>button:first-child{border:1px solid var(--tv-line);background:#fff;border-radius:16px;padding:14px;display:grid;grid-template-columns:90px minmax(0,1fr) auto;gap:12px;align-items:center;text-align:left;color:inherit;width:100%}
+.calendarFullRow>.rowAction{align-self:center;min-height:42px}
+.withIcon{display:inline-flex;align-items:center;justify-content:center;gap:8px}
+@media(max-width:980px){
+  .familyActionGrid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .familyHomeGrid{grid-template-columns:1fr}
+  .agendaRow{grid-template-columns:72px minmax(0,1fr);gap:10px}
+  .agendaRow em{grid-column:2;justify-self:start}
+  .calendarFullRow>button:first-child{grid-template-columns:72px minmax(0,1fr)}
+  .calendarFullRow>button:first-child em{grid-column:2;justify-self:start}
+  .calendarIntegration{flex-direction:column}
+  .integrationBadges{justify-content:flex-start}
+}
+@media(max-width:560px){
+  .familyActionGrid{grid-template-columns:1fr}
+  .miniComposer{grid-template-columns:1fr}
+  .miniComposer button{width:100%}
+}
+
+/* --- Family app continuation: tasks, calendar import and packing-shopping bridge --- */
+.dashboardAside{display:flex;flex-direction:column;gap:14px}
+.familyMiniRow small{color:var(--tv-muted);font-size:12px;margin-left:auto;white-space:nowrap}
+.taskForm.expanded{border:1px solid var(--tv-line);background:#fff;padding:14px}
+.taskListRow small{line-height:1.4}
+.integrationTools{display:flex;flex-direction:column;gap:10px;align-items:flex-end;min-width:260px;max-width:360px}
+.calendarConnectBox{display:flex;flex-direction:column;gap:10px;width:100%}
+.miniActionsWide{display:grid;grid-template-columns:1fr 1fr;gap:8px;width:100%}
+.miniActionsWide button{min-height:44px;padding:10px 12px}
+.calendarChoices{display:flex;flex-direction:column;gap:7px;background:#fff;border:1px solid var(--tv-line);border-radius:14px;padding:10px;width:100%;max-height:170px;overflow:auto}
+.calendarChoices label{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:800;color:var(--tv-text)}
+.calendarChoices input{width:auto}
+.icsImportButton{display:inline-flex;align-items:center;justify-content:center;gap:8px;border:1px solid var(--tv-line);border-radius:14px;background:#fff;color:var(--tv-accent);font-weight:900;padding:12px 14px;width:100%;cursor:pointer}
+.icsImportButton input{position:absolute;inline-size:1px;block-size:1px;opacity:0;pointer-events:none}
+.calendarIntegration small{display:block;color:var(--tv-muted);font-size:12px;margin-top:8px;line-height:1.4}
+.authMsg.soft{background:#fff8e6;color:#795d10;border-color:#f0dc9d;width:100%}
+.packShoppingBridge{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:14px;align-items:center}
+.packShoppingBridge h2{margin:0 0 4px;font-size:18px;color:var(--tv-text)}
+.packShoppingBridge p{margin:0;color:var(--tv-muted);line-height:1.4}
+.packShoppingBridge .primary{flex:none;white-space:nowrap}
+.packShoppingBridge button:disabled,.calendarConnectBox button:disabled{opacity:.55;cursor:not-allowed}
+.chatThreadChips{margin-bottom:-6px}
+@media(max-width:720px){
+  .integrationTools{align-items:stretch;width:100%;max-width:none}
+  .miniActionsWide{grid-template-columns:1fr}
+  .packShoppingBridge{grid-template-columns:1fr}.packShoppingBridge .primary{width:100%}
+}
+.calendarIntegration{flex-direction:column}
+.calendarConnector{width:100%;border:1px solid var(--tv-line);background:#fff;border-radius:18px;padding:16px;display:flex;flex-direction:column;gap:12px}
+.connectorHead{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}
+.connectorHead h3{margin:0 0 4px;color:var(--tv-text);font-size:17px}
+.connectorHead p{margin:0;color:var(--tv-muted);font-size:13px;line-height:1.4}
+.connectorActions{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.connectorActions button:disabled{opacity:.55;cursor:not-allowed}
+.calendarPickList{display:flex;flex-direction:column;gap:8px;border-top:1px solid var(--tv-line);padding-top:12px}
+.calendarPickList>b{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--tv-muted)}
+.calendarPick{display:flex;gap:10px;align-items:center;background:var(--tv-bg);border:1px solid var(--tv-line);border-radius:12px;padding:10px 12px;font-weight:800;color:var(--tv-text)}
+.calendarPick input{width:auto;flex:0 0 auto}
+.calendarPick span{line-height:1.3}
+.linkAction{display:inline-flex;align-items:center;gap:5px;text-decoration:none;background:var(--tv-blue-soft);color:#365991}
+.dangerText{color:#b14c37}
+.icsImportForm textarea{min-height:120px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px}
+@media(max-width:560px){.connectorHead{flex-direction:column}.connectorActions{grid-template-columns:1fr}.calendarFullRow{grid-template-columns:1fr}.calendarFullRow>.rowAction{justify-content:center}}
+
+/* --- 0.7 cleanup: unified Travelvault home, no separate hero surface --- */
+.unifiedHomeScreen .appHeader h1{font-size:26px}
+.homeStatusGrid{display:grid;grid-template-columns:minmax(260px,1.6fr) repeat(3,minmax(130px,.6fr));gap:14px;align-items:stretch}
+.homeStatusCard{border:1px solid var(--tv-line);background:#fff;border-radius:20px;padding:16px 18px;text-align:left;color:var(--tv-text);display:flex;flex-direction:column;gap:5px;min-height:112px;box-shadow:0 6px 18px rgb(46 37 27 / 4%)}
+.homeStatusCard small{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--tv-muted);font-weight:900}
+.homeStatusCard b{font-size:28px;line-height:1.05;color:var(--tv-text)}
+.homeStatusCard span{font-size:13px;line-height:1.35;color:var(--tv-muted)}
+.homeStatusCard.nextStatus b{font-size:20px;line-height:1.2}
+.storageLine{margin:-12px 2px 0;color:var(--tv-muted);font-size:12px;font-weight:800}
+.compactActions{grid-template-columns:repeat(6,minmax(0,1fr))}
+.compactActions .familyHomeTile{border-radius:18px;padding:14px;box-shadow:none}
+.compactActions .familyHomeTile .iconTile{width:38px;height:38px;border-radius:12px}
+.familyHomeContent{gap:18px}
+.familyPanel,.compactPanel{padding:20px}
+@media(min-width:980px){
+  .phone{height:calc(100vh - 32px);min-height:720px;overflow:hidden}
+  .screen{min-height:100%;height:100%}
+  .content{min-height:0}
+  .familyHomeScreen .content{padding-bottom:116px}
+}
+@media(max-width:1180px){
+  .homeStatusGrid{grid-template-columns:1fr 1fr}
+  .homeStatusCard.nextStatus{grid-column:1 / -1}
+  .compactActions{grid-template-columns:repeat(3,minmax(0,1fr))}
+}
+@media(max-width:560px){
+  .homeStatusGrid{grid-template-columns:1fr 1fr;gap:10px}
+  .homeStatusCard{min-height:98px;padding:13px 14px;border-radius:17px}
+  .homeStatusCard.nextStatus{grid-column:1 / -1}
+  .homeStatusCard b{font-size:24px}
+  .homeStatusCard.nextStatus b{font-size:18px}
+  .compactActions{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .compactActions .familyHomeTile{padding:13px;gap:8px}
+  .compactActions .familyHomeTile small{font-size:12px}
+}

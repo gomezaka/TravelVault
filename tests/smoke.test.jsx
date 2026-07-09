@@ -25,7 +25,6 @@ import { App } from '../src/main.jsx'
 async function renderApp(){
   const user = userEvent.setup()
   render(<App testMode />)
-  // vent til splash er ferdig (950 ms timer)
   await waitFor(() => expect(screen.queryByText('Samler reisen din')).toBeFalsy(), { timeout: 3000 })
   return user
 }
@@ -65,6 +64,74 @@ describe('Travelvault testmodus', () => {
   it('viser tom starttilstand', async () => {
     await renderApp()
     expect(screen.getByText('Ingen turer ennå')).toBeTruthy()
+  })
+
+  it('familiehjem: handleliste, chat og kalender kan brukes', async () => {
+    const user = await renderApp()
+    expect(screen.getByText('Familie, hverdag og reiser samlet')).toBeTruthy()
+
+    await user.click(screen.getAllByRole('button', { name: /Handleliste/ })[0])
+    await user.type(screen.getByPlaceholderText(/Skriv f.eks. melk/), 'Melk')
+    await user.click(screen.getByRole('button', { name: 'Legg til' }))
+    expect(await screen.findByText('Melk')).toBeTruthy()
+    await user.click(screen.getByRole('button', { name: 'Til hjem' }))
+
+    await user.click(screen.getAllByRole('button', { name: /Chat|Familiechat/ })[0])
+    await user.type(screen.getByPlaceholderText('Skriv melding til familien'), 'Henter etter trening')
+    await user.click(screen.getByRole('button', { name: 'Send melding' }))
+    expect(await screen.findByText('Henter etter trening')).toBeTruthy()
+    await user.click(screen.getByRole('button', { name: /Tilbake fra Chat/ }))
+
+    await user.click(screen.getAllByRole('button', { name: /Kalender/ })[0])
+    await user.click(screen.getByRole('button', { name: 'Legg til avtale' }))
+    await user.type(screen.getByPlaceholderText('Tittel, f.eks. Trening'), 'Fotballtrening')
+    await user.type(screen.getByPlaceholderText('Hvem gjelder det?'), 'Ola')
+    await user.click(screen.getByRole('button', { name: 'Lagre avtale' }))
+    expect(await screen.findByText('Fotballtrening')).toBeTruthy()
+  })
+
+  it('familiehjem: må-ordnes kan brukes', async () => {
+    const user = await renderApp()
+    await user.click(screen.getAllByRole('button', { name: /Må ordnes/ })[0])
+    await user.type(screen.getByPlaceholderText('Hva må ordnes?'), 'Bestill passbilder')
+    await user.type(screen.getByPlaceholderText('Hvem gjelder det?'), 'Ola')
+    await user.click(screen.getByRole('button', { name: 'Legg til oppgave' }))
+    expect(await screen.findByText('Bestill passbilder')).toBeTruthy()
+    await user.click(screen.getByRole('button', { name: 'Til hjem' }))
+    expect(screen.getByText('Familie, hverdag og reiser samlet')).toBeTruthy()
+  })
+
+  it('kalender: importerer Spond/iCal-fil', async () => {
+    const user = await renderApp()
+    await user.click(screen.getAllByRole('button', { name: /Kalender/ })[0])
+    const ics = `BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:spond-demo-1
+DTSTART:20260710T180000
+DTEND:20260710T193000
+SUMMARY:Fotballtrening
+LOCATION:Klubbhuset
+DESCRIPTION:Ta med drikkeflaske
+END:VEVENT
+END:VCALENDAR`
+    await user.upload(screen.getByLabelText('Velg .ics-fil'), new File([ics], 'spond-trening.ics', { type: 'text/calendar' }))
+    expect(await screen.findByText('Fotballtrening')).toBeTruthy()
+    expect(screen.getByText(/1 av 1 avtaler importert/)).toBeTruthy()
+  })
+
+  it('pakk: må-kjøpes kan sendes til felles handleliste', async () => {
+    const user = await renderApp()
+    await createTrip(user, { type: 'Cup', name: 'Handlecup' })
+    await clickNav(user, 'Pakk')
+    const row = await screen.findByText('Drakt')
+    await user.click(within(row.closest('.packRow')).getByRole('button', { name: 'Må kjøpes' }))
+    await user.click(screen.getByRole('button', { name: /Send 1 til handlelisten/ }))
+    expect(await screen.findByText('1 punkt lagt i felles handleliste.')).toBeTruthy()
+    await waitFor(() => {
+      const saved = JSON.parse(window.localStorage.getItem('travelvault-test-state-v2') || '{}')
+      expect(saved.household.shopping.some(item => item.title === 'Drakt' && item.source === 'trip')).toBe(true)
+    })
   })
 
   it('oppretter tur via veiviseren med kartsøk', async () => {

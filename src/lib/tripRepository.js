@@ -225,8 +225,131 @@ export function mapFamilyRow(row){
     relation: row.relation || 'family',
     inviteStatus: row.invite_status || 'not_sent',
     invitedAt: row.invited_at || null,
-    createdAt: row.created_at || null
+    createdAt: row.created_at || null,
+    householdMemberId: row.household_member_id || null,
+    userId: row.user_id || null,
+    source: 'family_members'
   }
+}
+
+function mapHouseholdFamilyRow(row, currentUserId){
+  const role = row.role || 'member'
+  const isSelf = row.user_id === currentUserId
+  return {
+    id: row.family_member_id || `household-${row.id}`,
+    householdMemberId: row.id,
+    householdId: row.household_id,
+    userId: row.user_id || null,
+    name: row.display_name || row.email?.split('@')[0] || 'Familiemedlem',
+    email: row.email || '',
+    relation: isSelf ? 'self' : role === 'owner' ? 'adult' : 'family',
+    role: role === 'owner' ? 'Eier' : role === 'admin' ? 'Admin' : role === 'viewer' ? 'Lesetilgang/barn' : 'Medlem',
+    householdRole: role,
+    inviteStatus: 'accepted',
+    accessStatus: row.status || 'active',
+    invitedAt: null,
+    createdAt: row.created_at || null,
+    source: 'household_members'
+  }
+}
+
+function missingHouseholdInviteTable(error){
+  const text = `${error?.code || ''} ${error?.message || ''} ${error?.details || ''} ${error?.hint || ''}`.toLowerCase()
+  return text.includes('household_') || text.includes('households') || text.includes('schema cache') || text.includes('pgrst205') || (text.includes('relation') && text.includes('does not exist'))
+}
+
+async function currentAuthUser(){
+  const { data, error } = await supabase.auth.getUser()
+  if(error) throw error
+  return data?.user || null
+}
+
+function readPreferredHouseholdId(){
+  try{
+    if(typeof window === 'undefined') return ''
+    return window.localStorage.getItem('travelvault-active-household-id') || ''
+  }catch{
+    return ''
+  }
+}
+
+async function fetchActiveHouseholdIdForUser(userId){
+  if(!userId) return null
+  const preferredHouseholdId = readPreferredHouseholdId()
+  if(preferredHouseholdId){
+    const { data: preferredRows, error: preferredError } = await supabase
+      .from('household_members')
+      .select('household_id')
+      .eq('household_id', preferredHouseholdId)
+      .eq('user_id', userId)
+      .limit(1)
+    if(preferredError) throw preferredError
+    if(preferredRows?.[0]?.household_id) return preferredRows[0].household_id
+  }
+
+  const { data: memberRows, error: memberError } = await supabase
+    .from('household_members')
+    .select('household_id,created_at')
+    .eq('user_id', userId)
+    .order('created_at', { ascending: true })
+    .limit(1)
+  if(memberError) throw memberError
+  if(memberRows?.[0]?.household_id) return memberRows[0].household_id
+
+  const { data: ownedRows, error: ownedError } = await supabase
+    .from('households')
+    .select('id')
+    .eq('owner_id', userId)
+    .order('created_at', { ascending: true })
+    .limit(1)
+  if(ownedError) throw ownedError
+  return ownedRows?.[0]?.id || null
+}
+
+async function fetchHouseholdFamilyRows(userId){
+  try{
+    const householdId = await fetchActiveHouseholdIdForUser(userId)
+    if(!householdId) return []
+    const { data, error } = await supabase
+      .from('household_members')
+      .select('id,household_id,user_id,role,display_name,email,family_member_id,status,created_at')
+      .eq('household_id', householdId)
+      .order('created_at', { ascending: true })
+    if(error) throw error
+    return (data || []).map(row => mapHouseholdFamilyRow(row, userId))
+  }catch(error){
+    if(missingHouseholdInviteTable(error)) return []
+    throw error
+  }
+}
+
+function mergeFamilyAndHouseholdMembers(familyRows, householdRows){
+  const byKey = new Map()
+  const keyFor = row => row.email ? `email:${row.email.toLowerCase()}` : row.householdMemberId ? `hm:${row.householdMemberId}` : `id:${row.id}`
+
+  householdRows.forEach(row => byKey.set(keyFor(row), row))
+  familyRows.forEach(row => {
+    const key = keyFor(row)
+    const household = row.email ? byKey.get(`email:${row.email.toLowerCase()}`) : null
+    const merged = household ? {
+      ...row,
+      householdMemberId: household.householdMemberId,
+      householdId: household.householdId,
+      userId: household.userId,
+      role: household.role,
+      householdRole: household.householdRole,
+      inviteStatus: household.inviteStatus || row.inviteStatus,
+      accessStatus: household.accessStatus || row.accessStatus,
+      source: 'family_members'
+    } : row
+    byKey.set(key, merged)
+  })
+
+  return Array.from(byKey.values()).sort((a, b) => {
+    if(a.relation === 'self' && b.relation !== 'self') return -1
+    if(b.relation === 'self' && a.relation !== 'self') return 1
+    return String(a.createdAt || '').localeCompare(String(b.createdAt || ''))
+  })
 }
 
 export async function fetchTripsForUser(){
@@ -301,13 +424,18 @@ export async function updateUserAppState(appState = {}){
 
 export async function fetchFamilyMembersForUser(){
   if(!supabase) return []
+  const user = await currentAuthUser()
+
   const { data, error } = await supabase
     .from('family_members')
     .select('id,display_name,email,relation,invite_status,invited_at,created_at')
     .order('created_at', { ascending: true })
 
   if(error) throw error
-  return (data || []).map(mapFamilyRow)
+
+  const familyRows = (data || []).map(mapFamilyRow)
+  const householdRows = await fetchHouseholdFamilyRows(user?.id)
+  return mergeFamilyAndHouseholdMembers(familyRows, householdRows)
 }
 
 export async function saveFamilyMember({ member }){
@@ -484,7 +612,7 @@ async function readFunctionError(error){
   return fallback
 }
 
-export async function inviteFamilyMember({ email, displayName, relation, tripId, memberId, familyMemberId }){
+export async function inviteFamilyMember({ email, displayName, relation, tripId, memberId, familyMemberId, householdId }){
   if(!supabase) throw new Error('Supabase mangler.')
   const { data, error } = await supabase.functions.invoke('send-family-invite', {
     body: {
@@ -493,7 +621,8 @@ export async function inviteFamilyMember({ email, displayName, relation, tripId,
       relation,
       tripId,
       memberId,
-      familyMemberId
+      familyMemberId,
+      householdId
     }
   })
 

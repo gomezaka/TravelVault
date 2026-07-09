@@ -1,14 +1,28 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { Bell, CalendarDays, Camera, ChevronLeft, ExternalLink, FileText, Home, ListChecks, Mail, MessageSquare, MoreHorizontal, PiggyBank, Plus, Search, Settings, Trash2, Trophy, Upload, UserPlus, Users, MapPin, Plane, Hotel, Ship, Utensils, RefreshCw, Car, Bus, TrainFront } from 'lucide-react'
+import { Bell, CalendarDays, Camera, ChevronLeft, ClipboardList, ExternalLink, FileText, Home, ListChecks, Mail, MessageSquare, MoreHorizontal, PiggyBank, Plus, Search, Settings, Trash2, Trophy, Upload, UserPlus, Users, MapPin, Plane, Hotel, Ship, Utensils, RefreshCw, Car, Bus, TrainFront } from 'lucide-react'
 import { supabase } from './lib/supabase'
 import { addTripMemberToTrip, createTripDocumentSignedUrl, createTripWithMembers, deleteFamilyMember, deleteTripById, deleteTripDocumentById, fetchDocumentsForTrip, fetchFamilyMembersForUser, fetchMembersForTrip, fetchTripsForUser, fetchUserAppState, inviteFamilyMember, saveFamilyMember, updateTripAppState, updateTripDetails, updateTripDocumentMetadata, updateUserAppState } from './lib/tripRepository'
 import { searchLocations } from './lib/locationSearch'
-import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs'
-import pdfWorkerSrc from 'pdfjs-dist/legacy/build/pdf.worker.mjs?url'
+import { fetchGoogleCalendarEvents, fetchGoogleCalendars, googleCalendarConfig, hasGoogleCalendarConfig, requestGoogleCalendarToken } from './lib/googleCalendar'
+import { acceptHouseholdInvite, deleteHouseholdMember, fetchHouseholdData, isMissingHouseholdTablesError, saveHouseholdData, subscribeToHouseholdData } from './lib/householdRepository'
 import './styles/app.css'
 
-pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerSrc
+
+
+let pdfjsModulePromise = null
+async function getPdfjs(){
+  if(!pdfjsModulePromise){
+    pdfjsModulePromise = Promise.all([
+      import('pdfjs-dist/legacy/build/pdf.mjs'),
+      import('pdfjs-dist/legacy/build/pdf.worker.mjs?url')
+    ]).then(([pdfjs, worker]) => {
+      pdfjs.GlobalWorkerOptions.workerSrc = worker.default || worker
+      return pdfjs
+    })
+  }
+  return pdfjsModulePromise
+}
 
 const iconMap = { transport: Ship, ferry: Ship, boat: Ship, car: Car, bus: Bus, train: TrainFront, hotel: Hotel, match: Trophy, food: Utensils, activity: MapPin, flight: Plane, other: MapPin }
 const navIconSymbols = {
@@ -37,6 +51,8 @@ const authEnabled = Boolean(supabase) && import.meta.env.VITE_ENABLE_AUTH !== 'f
 const googleAuthEnabled = authEnabled && import.meta.env.VITE_ENABLE_GOOGLE_AUTH !== 'false'
 const testStateKey = 'travelvault-test-state-v2'
 const customPackingTemplatesKey = 'travelvault-packing-templates-v1'
+const pendingHouseholdInviteKey = 'travelvault-pending-household-invite'
+const activeHouseholdIdKey = 'travelvault-active-household-id'
 const legacyTestStateKeys = ['travelvault-test-state-v1']
 const legacyDemoTripIds = new Set(['danmark-cup-2027', 'italia-2027', 'sverige-2025'])
 const legacyDemoTripTitles = new Set(['Danmark Cup 2027', 'Italia sommerferie', 'Sverige høsttur 2025'])
@@ -219,6 +235,7 @@ async function readImageOcrText(file){
 async function readPdfText(file){
   if(!isPdfFile(file) || typeof file?.arrayBuffer !== 'function') return ''
   try{
+    const pdfjs = await getPdfjs()
     const data = new Uint8Array(await file.arrayBuffer())
     const task = pdfjs.getDocument({ data })
     const pdf = await task.promise
@@ -243,6 +260,7 @@ async function readPdfText(file){
 async function readPdfOcrText(file){
   if(!isPdfFile(file) || typeof file?.arrayBuffer !== 'function' || typeof document === 'undefined') return ''
   try{
+    const pdfjs = await getPdfjs()
     const data = new Uint8Array(await file.arrayBuffer())
     const task = pdfjs.getDocument({ data })
     const pdf = await task.promise
@@ -271,10 +289,13 @@ async function readPdfOcrText(file){
 }
 async function readDocumentText(file){
   if(isPdfFile(file)){
+    const plainText = await readPlainTextFallback(file)
+    if(plainText) return plainText
     const pdfText = await readPdfText(file)
     if(pdfText) return pdfText
     const pdfOcrText = await readPdfOcrText(file)
     if(pdfOcrText) return pdfOcrText
+    return ''
   }
   if(isImageFile(file)){
     const imageOcrText = await readImageOcrText(file)
@@ -883,6 +904,7 @@ function relationLabel(value){
   return relationOptions.find(([id]) => id === value)?.[1] || 'Familie'
 }
 function inviteStatusLabel(status){
+  if(status === 'accepted' || status === 'active') return 'Har tilgang'
   if(status === 'invite_sent' || status === 'sent') return 'Invitert'
   if(status === 'invite_failed' || status === 'failed') return 'Feilet'
   if(status === 'pending') return 'Venter'
@@ -1052,6 +1074,47 @@ function writeCustomPackingTemplates(templates = []){
     }))))
   }catch{}
 }
+
+function captureHouseholdInviteFromUrl(){
+  if(typeof window === 'undefined') return ''
+  try{
+    const url = new URL(window.location.href)
+    const token = url.searchParams.get('householdInvite') || url.searchParams.get('invite') || ''
+    if(!token) return window.localStorage.getItem(pendingHouseholdInviteKey) || ''
+    window.localStorage.setItem(pendingHouseholdInviteKey, token)
+    url.searchParams.delete('householdInvite')
+    url.searchParams.delete('invite')
+    const next = `${url.pathname}${url.search}${url.hash}` || '/'
+    window.history.replaceState({}, document.title, next)
+    return token
+  }catch{
+    return ''
+  }
+}
+function readPendingHouseholdInvite(){
+  if(typeof window === 'undefined') return ''
+  try{
+    return window.localStorage.getItem(pendingHouseholdInviteKey) || ''
+  }catch{
+    return ''
+  }
+}
+function clearPendingHouseholdInvite(){
+  if(typeof window === 'undefined') return
+  try{ window.localStorage.removeItem(pendingHouseholdInviteKey) }catch{}
+}
+function readActiveHouseholdId(){
+  if(typeof window === 'undefined') return ''
+  try{
+    return window.localStorage.getItem(activeHouseholdIdKey) || ''
+  }catch{
+    return ''
+  }
+}
+function writeActiveHouseholdId(householdId){
+  if(typeof window === 'undefined' || !householdId) return
+  try{ window.localStorage.setItem(activeHouseholdIdKey, householdId) }catch{}
+}
 function seedStartContent(create){
   const content = create.startContent || defaultStartContent(create.type)
   const logistics = normalizeLogistics(create.logistics)
@@ -1205,6 +1268,370 @@ function buildTripAppState({ events, packing, expenses, matches, messages, docum
     logistics: normalizeLogistics(logistics)
   }
 }
+
+function emptyHouseholdState(){
+  return { shopping: [], messages: [], calendarEvents: [], tasks: [], calendarSources: { google: emptyGoogleCalendarSource() } }
+}
+function emptyGoogleCalendarSource(){
+  return { connected: false, selectedCalendarIds: [], calendarNames: {}, lastImportAt: null, lastImportCount: 0 }
+}
+function normalizeShoppingItems(items = []){
+  return (Array.isArray(items) ? items : [])
+    .map((item, index) => {
+      const title = String(typeof item === 'string' ? item : item?.title || '').trim()
+      if(!title) return null
+      return {
+        id: typeof item === 'string' ? `shop-${index}` : (item.id || createClientId('shop')),
+        title,
+        quantity: typeof item === 'string' ? '' : String(item.quantity || '').trim(),
+        note: typeof item === 'string' ? '' : String(item.note || item.notes || '').trim(),
+        category: typeof item === 'string' ? '' : String(item.category || '').trim(),
+        checked: typeof item === 'string' ? false : Boolean(item.checked || item.done || item.completed),
+        source: typeof item === 'string' ? 'family' : (item.source || 'family'),
+        sourceRef: typeof item === 'string' ? '' : String(item.sourceRef || item.source_ref || '').trim(),
+        createdAt: typeof item === 'string' ? new Date().toISOString() : (item.createdAt || item.created_at || new Date().toISOString()),
+        updatedAt: typeof item === 'string' ? null : (item.updatedAt || item.updated_at || null)
+      }
+    })
+    .filter(Boolean)
+}
+function normalizeFamilyMessages(messages = []){
+  return (Array.isArray(messages) ? messages : [])
+    .map((message, index) => {
+      const text = String(message?.text || message?.message || '').trim()
+      if(!text) return null
+      return {
+        id: message.id || createClientId('family-msg'),
+        author: message.author || message.authorName || 'Du',
+        text,
+        createdAt: message.createdAt || message.created_at || new Date(Date.now() + index).toISOString(),
+        threadId: message.threadId || message.thread_id || 'family',
+        threadTitle: message.threadTitle || message.thread_title || ''
+      }
+    })
+    .filter(Boolean)
+}
+
+function normalizeHouseholdTasks(tasks = []){
+  return (Array.isArray(tasks) ? tasks : [])
+    .map((task, index) => {
+      const title = String(typeof task === 'string' ? task : task?.title || '').trim()
+      if(!title) return null
+      return {
+        id: typeof task === 'string' ? `task-${index}` : (task.id || createClientId('task')),
+        title,
+        done: typeof task === 'string' ? false : Boolean(task.done || task.checked || task.completed),
+        priority: typeof task === 'string' ? 'normal' : (task.priority || 'normal'),
+        dueDate: typeof task === 'string' ? '' : (task.dueDate || task.due_date || ''),
+        person: typeof task === 'string' ? '' : String(task.person || task.assignedTo || task.assigned_to || '').trim(),
+        source: typeof task === 'string' ? 'family' : (task.source || 'family'),
+        sourceRef: typeof task === 'string' ? '' : String(task.sourceRef || task.source_ref || '').trim(),
+        notes: typeof task === 'string' ? '' : String(task.notes || task.note || '').trim(),
+        createdAt: typeof task === 'string' ? new Date().toISOString() : (task.createdAt || task.created_at || new Date(Date.now() + index).toISOString()),
+        updatedAt: typeof task === 'string' ? null : (task.updatedAt || task.updated_at || null)
+      }
+    })
+    .filter(Boolean)
+}
+function normalizeFamilyCalendarEvents(events = []){
+  return (Array.isArray(events) ? events : [])
+    .map((event, index) => {
+      const title = String(event?.title || '').trim()
+      if(!title) return null
+      const source = event.source || event.sourceLabel || 'Manuell'
+      return {
+        id: event.id || event.sourceKey || createClientId('family-event'),
+        title,
+        date: event.date || event.startDate || event.start_date || '',
+        time: event.time || event.startTime || event.start_time || '',
+        endDate: event.endDate || event.end_date || '',
+        endTime: event.endTime || event.end_time || '',
+        person: String(event.person || event.assignedTo || event.assigned_to || '').trim(),
+        source,
+        sourceType: event.sourceType || event.source_type || (source === 'Google Kalender' || source === 'Spond via Google' ? 'google' : 'manual'),
+        sourceEventId: event.sourceEventId || event.source_event_id || '',
+        sourceKey: event.sourceKey || event.source_key || '',
+        sourceRef: event.sourceRef || event.source_ref || '',
+        calendarId: event.calendarId || event.calendar_id || '',
+        calendarName: event.calendarName || event.calendar_name || '',
+        externalLink: event.externalLink || event.external_link || '',
+        location: String(event.location || event.place || '').trim(),
+        notes: String(event.notes || event.note || '').trim(),
+        allDay: Boolean(event.allDay || event.all_day),
+        createdAt: event.createdAt || event.created_at || new Date(Date.now() + index).toISOString(),
+        syncedAt: event.syncedAt || event.synced_at || null
+      }
+    })
+    .filter(Boolean)
+}
+function normalizeCalendarSources(sources = {}){
+  const source = sources && typeof sources === 'object' ? sources : {}
+  const google = source.google && typeof source.google === 'object' ? source.google : {}
+  const calendarNames = google.calendarNames && typeof google.calendarNames === 'object' ? google.calendarNames : {}
+  return {
+    google: {
+      connected: Boolean(google.connected),
+      selectedCalendarIds: Array.isArray(google.selectedCalendarIds) ? google.selectedCalendarIds.filter(Boolean) : [],
+      calendarNames,
+      lastImportAt: google.lastImportAt || null,
+      lastImportCount: Number.isFinite(Number(google.lastImportCount)) ? Number(google.lastImportCount) : 0
+    }
+  }
+}
+function normalizeHouseholdState(state = {}){
+  const source = state && typeof state === 'object' ? state : {}
+  return {
+    shopping: normalizeShoppingItems(source.shopping || source.shoppingItems || source.grocery || []),
+    messages: normalizeFamilyMessages(source.messages || source.familyMessages || source.chat || []),
+    calendarEvents: normalizeFamilyCalendarEvents(source.calendarEvents || source.events || source.familyCalendar || []),
+    tasks: normalizeHouseholdTasks(source.tasks || source.todos || source.toDos || source.familyTasks || []),
+    calendarSources: normalizeCalendarSources(source.calendarSources || source.sources || {})
+  }
+}
+function householdFromUserAppState(appState = {}){
+  const source = appState?.household && typeof appState.household === 'object' ? appState.household : appState
+  return normalizeHouseholdState(source)
+}
+function buildUserAppState({ packingTemplates = [], household = emptyHouseholdState() } = {}){
+  return {
+    version: 4,
+    savedAt: new Date().toISOString(),
+    packingTemplates: normalizePackingTemplates(packingTemplates),
+    household: normalizeHouseholdState(household)
+  }
+}
+function householdHasTableContent(state = {}){
+  const normalized = normalizeHouseholdState(state)
+  return normalized.shopping.length > 0 || normalized.messages.length > 0 || normalized.calendarEvents.length > 0 || normalized.tasks.length > 0
+}
+function householdStorageStatusLabel(storage = {}){
+  if(storage.mode === 'tables') return storage.realtime ? 'Supabase Realtime aktiv' : 'Supabase-tabeller aktiv'
+  if(storage.mode === 'app_state') return 'Kompatibel lagring i app_state'
+  return 'Lokal testmodus'
+}
+function mergeHouseholdTableData(base, tableData){
+  const current = normalizeHouseholdState(base)
+  const remote = normalizeHouseholdState(tableData || {})
+  return normalizeHouseholdState({
+    ...current,
+    shopping: remote.shopping,
+    messages: remote.messages,
+    calendarEvents: remote.calendarEvents,
+    tasks: remote.tasks,
+    calendarSources: current.calendarSources
+  })
+}
+function sortableDateTime(date = '', time = ''){
+  return `${date || '9999-12-31'}T${time || '99:99'}`
+}
+function formatShortDate(dateString){
+  if(!dateString) return 'Uten dato'
+  const today = isoToday()
+  const tomorrow = addDaysDate(today, 1)
+  if(dateString === today) return 'I dag'
+  if(dateString === tomorrow) return 'I morgen'
+  return formatDate(dateString)
+}
+function formatAgendaMeta(row){
+  const bits = []
+  if(row.date) bits.push(formatShortDate(row.date))
+  if(row.time) bits.push(`kl. ${row.time}`)
+  if(row.person) bits.push(row.person)
+  if(row.place) bits.push(row.place)
+  if(row.sourceLabel) bits.push(row.sourceLabel)
+  return bits.join(' · ') || 'Uten tidspunkt'
+}
+function buildFamilyAgenda(household, trips = []){
+  const normalizedHousehold = normalizeHouseholdState(household)
+  const today = isoToday()
+  const calendarRows = normalizedHousehold.calendarEvents.map(event => ({
+    id: event.id,
+    kind: 'calendar',
+    title: event.title,
+    date: event.date,
+    time: event.time,
+    person: event.person,
+    place: event.location || event.place || '',
+    sourceLabel: event.source,
+    note: event.notes,
+    event
+  }))
+  const taskRows = normalizedHousehold.tasks
+    .filter(task => !task.done)
+    .map(task => ({
+      id: `task-${task.id}`,
+      kind: 'task',
+      title: task.title,
+      date: task.dueDate || '',
+      time: '',
+      person: task.person,
+      place: '',
+      sourceLabel: 'Må ordnes',
+      note: task.notes,
+      task
+    }))
+  const tripRows = (Array.isArray(trips) ? trips : [])
+    .filter(trip => trip.status !== 'Tidligere')
+    .map(trip => ({
+      id: `trip-${trip.id}`,
+      kind: 'trip',
+      title: trip.title,
+      date: trip.startDate || '',
+      time: '',
+      person: '',
+      sourceLabel: trip.type === 'cup' ? 'Cup/reise' : 'Reise',
+      note: [trip.location, trip.date].filter(Boolean).join(' · '),
+      trip
+    }))
+  return [...calendarRows, ...taskRows, ...tripRows]
+    .filter(row => !row.date || row.date >= today)
+    .sort((a, b) => sortableDateTime(a.date, a.time).localeCompare(sortableDateTime(b.date, b.time)))
+}
+
+
+function isGoogleCalendarEvent(event = {}){
+  return event.sourceType === 'google' || event.source === 'Google Kalender' || event.source === 'Spond via Google'
+}
+function calendarEventDedupKey(event = {}){
+  if(event.sourceKey) return event.sourceKey
+  if(event.sourceRef) return event.sourceRef
+  if(event.sourceType && event.sourceEventId) return `${event.sourceType}:${event.calendarId || ''}:${event.sourceEventId}:${event.date || ''}:${event.time || ''}`
+  return event.id || createClientId('family-event')
+}
+function sortCalendarEvents(events = []){
+  return normalizeFamilyCalendarEvents(events).sort((a, b) => sortableDateTime(a.date, a.time).localeCompare(sortableDateTime(b.date, b.time)))
+}
+function mergeImportedGoogleCalendarEvents(currentEvents = [], importedEvents = [], selectedCalendarIds = []){
+  const selected = new Set((selectedCalendarIds || []).filter(Boolean))
+  const preserved = normalizeFamilyCalendarEvents(currentEvents).filter(event => {
+    if(!isGoogleCalendarEvent(event)) return true
+    return selected.size > 0 && !selected.has(event.calendarId)
+  })
+  const rowsByKey = new Map()
+  for(const event of [...preserved, ...normalizeFamilyCalendarEvents(importedEvents)]){
+    rowsByKey.set(calendarEventDedupKey(event), event)
+  }
+  return sortCalendarEvents([...rowsByKey.values()])
+}
+function compactDateTime(value){
+  if(!value) return ''
+  try{
+    return new Date(value).toLocaleString('nb-NO', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+  }catch{
+    return value
+  }
+}
+
+
+function simpleHash(value = ''){
+  let hash = 0
+  for(const char of String(value || '')) hash = ((hash << 5) - hash + char.charCodeAt(0)) | 0
+  return Math.abs(hash).toString(36)
+}
+function unfoldIcsLines(text = ''){
+  return String(text || '').replace(/\r\n[ \t]/g, '').replace(/\n[ \t]/g, '').replace(/\r/g, '\n').split('\n')
+}
+function unescapeIcsText(value = ''){
+  return String(value || '').replace(/\\n/gi, '\n').replace(/\\,/g, ',').replace(/\\;/g, ';').replace(/\\\\/g, '\\').trim()
+}
+function parseIcsDateTime(value = ''){
+  const raw = String(value || '').trim()
+  const match = raw.match(/^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})?)?Z?$/)
+  if(!match) return { date: '', time: '' }
+  const [, year, month, day, hour, minute] = match
+  return { date: `${year}-${month}-${day}`, time: hour && minute ? `${hour}:${minute}` : '' }
+}
+async function readUploadedText(file){
+  if(!file) return ''
+  if(typeof file.text === 'function') return file.text()
+  if(typeof FileReader !== 'undefined'){
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(String(reader.result || ''))
+      reader.onerror = () => reject(reader.error || new Error('Klarte ikke å lese filen.'))
+      reader.readAsText(file)
+    })
+  }
+  return ''
+}
+function parseIcsEvents(text = '', sourceLabel = 'iCal-import'){
+  const lines = unfoldIcsLines(text)
+  const blocks = []
+  let current = null
+  for(const line of lines){
+    const clean = line.trim()
+    if(clean === 'BEGIN:VEVENT') current = []
+    else if(clean === 'END:VEVENT'){
+      if(current) blocks.push(current)
+      current = null
+    }else if(current){
+      current.push(line)
+    }
+  }
+  return blocks.map(block => {
+    const fields = {}
+    for(const line of block){
+      const splitIndex = line.indexOf(':')
+      if(splitIndex < 0) continue
+      const rawName = line.slice(0, splitIndex).split(';')[0].toUpperCase()
+      const value = unescapeIcsText(line.slice(splitIndex + 1))
+      if(!fields[rawName]) fields[rawName] = value
+    }
+    const start = parseIcsDateTime(fields.DTSTART)
+    const end = parseIcsDateTime(fields.DTEND)
+    const title = String(fields.SUMMARY || 'Kalenderavtale').trim()
+    if(!title || !start.date) return null
+    const uid = fields.UID || simpleHash(`${title}-${start.date}-${start.time}-${fields.LOCATION || ''}`)
+    return {
+      id: `ics-${simpleHash(`${sourceLabel}-${uid}`)}`,
+      title,
+      date: start.date,
+      time: start.time,
+      endDate: end.date,
+      endTime: end.time,
+      person: '',
+      location: fields.LOCATION || '',
+      source: sourceLabel,
+      sourceKey: `ics:${uid}`,
+      sourceEventId: uid,
+      sourceType: 'ics',
+      notes: fields.DESCRIPTION || '',
+      createdAt: new Date().toISOString()
+    }
+  }).filter(Boolean)
+}
+function createShoppingItemFromTitle(title, extra = {}){
+  return {
+    id: createClientId('shop'),
+    title: String(title || '').trim(),
+    checked: false,
+    quantity: '',
+    note: '',
+    category: '',
+    source: 'family',
+    sourceRef: '',
+    createdAt: new Date().toISOString(),
+    updatedAt: null,
+    ...extra
+  }
+}
+function createTaskFromTitle(title, extra = {}){
+  return {
+    id: createClientId('task'),
+    title: String(title || '').trim(),
+    done: false,
+    priority: 'normal',
+    dueDate: '',
+    person: '',
+    source: 'family',
+    sourceRef: '',
+    notes: '',
+    createdAt: new Date().toISOString(),
+    updatedAt: null,
+    ...extra
+  }
+}
+
 function isStaleParsedDocument(document = {}){
   const data = document.extractedData || {}
   const label = `${document.title || ''} ${document.fileName || ''} ${data.summary || ''}`
@@ -1251,17 +1678,19 @@ function loadTestState(){
     const family = Array.isArray(parsed.family)
       ? parsed.family.filter(member => member && (member.name || member.email))
       : []
+    const household = normalizeHouseholdState(parsed.household || {})
     return {
       trips,
       detailsByTrip,
-      family
+      family,
+      household
     }
   }catch{
-    return { trips: [], detailsByTrip: {}, family: [] }
+    return { trips: [], detailsByTrip: {}, family: [], household: emptyHouseholdState() }
   }
 }
-function saveTestState(trips, detailsByTrip, family){
-  window.localStorage.setItem(testStateKey, JSON.stringify({ trips, detailsByTrip, family }))
+function saveTestState(trips, detailsByTrip, family, household){
+  window.localStorage.setItem(testStateKey, JSON.stringify({ trips, detailsByTrip, family, household: normalizeHouseholdState(household) }))
 }
 function importFailureMessage(failures = []){
   const details = failures.filter(Boolean).join(' ')
@@ -1440,6 +1869,8 @@ function AuthGate(){
   const [email, setEmail] = useState('')
   const [message, setMessage] = useState('')
   const [authError, setAuthError] = useState('')
+  const [pendingInviteToken, setPendingInviteToken] = useState(() => captureHouseholdInviteFromUrl())
+  const [inviteAccepting, setInviteAccepting] = useState(false)
 
   useEffect(() => {
     if(!supabase) return undefined
@@ -1467,6 +1898,33 @@ function AuthGate(){
     }
     ensureProfile()
   }, [session])
+
+  useEffect(() => {
+    if(!supabase || !session?.user) return undefined
+    const token = pendingInviteToken || readPendingHouseholdInvite()
+    if(!token) return undefined
+    let cancelled = false
+    async function acceptInvite(){
+      setInviteAccepting(true)
+      setAuthError('')
+      setMessage('')
+      try{
+        const result = await acceptHouseholdInvite(token)
+        if(cancelled) return
+        if(result.householdId) writeActiveHouseholdId(result.householdId)
+        clearPendingHouseholdInvite()
+        setPendingInviteToken('')
+        setMessage(`Invitasjonen er godtatt. Du er koblet til ${result.householdName || 'familiehjemmet'}.`)
+      }catch(error){
+        if(cancelled) return
+        setAuthError(error.message || 'Klarte ikke å godta familieinvitasjonen.')
+      }finally{
+        if(!cancelled) setInviteAccepting(false)
+      }
+    }
+    acceptInvite()
+    return () => { cancelled = true }
+  }, [session?.user?.id, pendingInviteToken])
 
   const signIn = async () => {
     setAuthError('')
@@ -1503,12 +1961,12 @@ function AuthGate(){
 
   if(!supabase) return <MissingSupabaseConfig />
 
-  if(loading){
-    return <div className="page"><main className="phone"><LoadingSplash progress={62} loadingText="Laster innlogging og reisedata ..." footerText="Klargjør Travelvault ..."/></main></div>
+  if(loading || inviteAccepting){
+    return <div className="page"><main className="phone"><LoadingSplash progress={inviteAccepting ? 78 : 62} loadingText={inviteAccepting ? 'Godtar familieinvitasjon ...' : 'Laster innlogging og reisedata ...'} footerText={inviteAccepting ? 'Kobler deg til familiehjemmet ...' : 'Klargjør Travelvault ...'}/></main></div>
   }
 
   if(!session){
-    return <div className="page"><main className="phone"><section className="screen authScreen"><div className="authCard"><img src="/logo-mark.png" alt="Travelvault"/><h1>Travelvault</h1><p>Alt fra turen samlet på ett sted.</p>{googleAuthEnabled && <><button className="googleBtn" onClick={signInWithGoogle} type="button"><span>G</span>Fortsett med Google</button><div className="authDivider"><span></span><b>eller</b><span></span></div></>}<label className="field"><span>E-post</span><input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="navn@epost.no"/></label>{authError && <div className="authMsg error">{authError}</div>}{message && <div className="authMsg ok">{message}</div>}<button className="primary" onClick={signIn}>Logg inn med e-postlenke</button><small>{googleAuthEnabled ? 'Du kan logge inn med Google eller e-postlenke. Google OAuth må være aktivert i Supabase Auth.' : 'Google-innlogging er skjult til OAuth er konfigurert i Supabase. Bruk e-postlenke for testing nå.'}</small><div className="policyLinks"><a href="/privacy">Personvern</a><a href="/terms">Vilkår</a></div></div></section></main></div>
+    return <div className="page"><main className="phone"><section className="screen authScreen"><div className="authCard"><img src="/logo-mark.png" alt="Travelvault"/><h1>Travelvault</h1><p>Alt fra turen samlet på ett sted.</p>{pendingInviteToken && <div className="authMsg ok">Familieinvitasjonen er klar. Logg inn med e-posten invitasjonen ble sendt til.</div>}{googleAuthEnabled && <><button className="googleBtn" onClick={signInWithGoogle} type="button"><span>G</span>Fortsett med Google</button><div className="authDivider"><span></span><b>eller</b><span></span></div></>}<label className="field"><span>E-post</span><input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="navn@epost.no"/></label>{authError && <div className="authMsg error">{authError}</div>}{message && <div className="authMsg ok">{message}</div>}<button className="primary" onClick={signIn}>Logg inn med e-postlenke</button><small>{googleAuthEnabled ? 'Du kan logge inn med Google eller e-postlenke. Google OAuth må være aktivert i Supabase Auth.' : 'Google-innlogging er skjult til OAuth er konfigurert i Supabase. Bruk e-postlenke for testing nå.'}</small><div className="policyLinks"><a href="/privacy">Personvern</a><a href="/terms">Vilkår</a></div></div></section></main></div>
   }
 
   return <App session={session} />
@@ -1557,11 +2015,13 @@ function TermsPolicy(){
 
 export function App({ session, testMode = false }){
   const supabaseMode = Boolean(!testMode && supabase && session)
-  const [storedTestState] = useState(() => testMode ? loadTestState() : { trips: [], detailsByTrip: {}, family: [] })
-  const [view, setView] = useState('trips')
+  const [storedTestState] = useState(() => testMode ? loadTestState() : { trips: [], detailsByTrip: {}, family: [], household: emptyHouseholdState() })
+  const [view, setView] = useState('home')
   const [trips, setTrips] = useState(() => testMode ? storedTestState.trips : [])
   const [detailsByTrip, setDetailsByTrip] = useState(() => testMode ? storedTestState.detailsByTrip : {})
   const [family, setFamily] = useState(() => testMode ? storedTestState.family : [])
+  const [household, setHousehold] = useState(() => testMode ? normalizeHouseholdState(storedTestState.household) : emptyHouseholdState())
+  const [householdStorage, setHouseholdStorage] = useState(() => testMode ? { mode: 'local', householdId: null, tablesReady: false, realtime: false } : { mode: 'app_state', householdId: null, tablesReady: false, realtime: false })
   const [packingTemplates, setPackingTemplates] = useState(() => testMode ? readCustomPackingTemplates() : [])
   const [familyLoading, setFamilyLoading] = useState(supabaseMode)
   const [familyError, setFamilyError] = useState('')
@@ -1586,9 +2046,11 @@ export function App({ session, testMode = false }){
   const [savingEdit, setSavingEdit] = useState(false)
   const [editError, setEditError] = useState('')
   const [create, setCreate] = useState(() => createTripDraft(session))
-  const [startupSplashDone, setStartupSplashDone] = useState(false)
+  const [startupSplashDone] = useState(true)
+  const [userStateReady, setUserStateReady] = useState(!supabaseMode)
   const reprocessedDocumentKeys = useRef(new Set())
   const remoteSaveErrorRef = useRef('')
+  const skipNextHouseholdSaveRef = useRef(false)
 
   const loadTrips = useCallback(async () => {
     if(!supabaseMode) return
@@ -1620,11 +2082,35 @@ export function App({ session, testMode = false }){
 
   const loadUserState = useCallback(async () => {
     if(!supabaseMode) return
+    setUserStateReady(false)
     try{
       const appState = await fetchUserAppState()
+      const legacyHousehold = householdFromUserAppState(appState)
       setPackingTemplates(normalizePackingTemplates(appState.packingTemplates || appState.packing_templates || []))
+
+      try{
+        const remoteHousehold = await fetchHouseholdData({ householdId: readActiveHouseholdId() })
+        if(remoteHousehold.householdId) writeActiveHouseholdId(remoteHousehold.householdId)
+        const tableHousehold = normalizeHouseholdState(remoteHousehold.household || {})
+        const hasTableContent = householdHasTableContent(tableHousehold)
+        const nextHousehold = hasTableContent
+          ? mergeHouseholdTableData(legacyHousehold, tableHousehold)
+          : legacyHousehold
+        skipNextHouseholdSaveRef.current = true
+        setHousehold(nextHousehold)
+        setHouseholdStorage({ mode: 'tables', householdId: remoteHousehold.householdId, tablesReady: true, realtime: true })
+        if(!hasTableContent && householdHasTableContent(legacyHousehold)){
+          await saveHouseholdData({ householdId: remoteHousehold.householdId, household: legacyHousehold })
+        }
+      }catch(remoteError){
+        if(!isMissingHouseholdTablesError(remoteError)) throw remoteError
+        setHousehold(legacyHousehold)
+        setHouseholdStorage({ mode: 'app_state', householdId: null, tablesReady: false, realtime: false })
+      }
     }catch(error){
       setTripsError(error.message || 'Klarte ikke å hente brukerlagring fra Supabase.')
+    }finally{
+      setUserStateReady(true)
     }
   }, [supabaseMode])
 
@@ -1635,25 +2121,71 @@ export function App({ session, testMode = false }){
   const savePackingTemplates = useCallback(async (nextTemplates) => {
     const normalized = normalizePackingTemplates(nextTemplates)
     setPackingTemplates(normalized)
-    if(!supabaseMode){
-      writeCustomPackingTemplates(normalized)
-      return
-    }
-    try{
-      await updateUserAppState({ packingTemplates: normalized })
-    }catch(error){
-      setTripsError(error.message || 'Klarte ikke å lagre pakkelisten på brukeren.')
-    }
+    if(!supabaseMode) writeCustomPackingTemplates(normalized)
   }, [supabaseMode])
 
-  useEffect(() => {
-    const timer = window.setTimeout(() => setStartupSplashDone(true), 950)
-    return () => window.clearTimeout(timer)
+  const updateHousehold = useCallback((updater) => {
+    setHousehold(current => {
+      const base = normalizeHouseholdState(current)
+      const patch = typeof updater === 'function' ? updater(base) : updater
+      return normalizeHouseholdState({ ...base, ...(patch || {}) })
+    })
   }, [])
 
   useEffect(() => {
-    if(testMode) saveTestState(trips, detailsByTrip, family)
-  }, [testMode, trips, detailsByTrip, family])
+    if(testMode) saveTestState(trips, detailsByTrip, family, household)
+  }, [testMode, trips, detailsByTrip, family, household])
+
+  useEffect(() => {
+    if(!supabaseMode || !userStateReady) return undefined
+    if(skipNextHouseholdSaveRef.current){
+      skipNextHouseholdSaveRef.current = false
+      return undefined
+    }
+    const timer = window.setTimeout(async () => {
+      try{
+        const normalizedHousehold = normalizeHouseholdState(household)
+        await updateUserAppState(buildUserAppState({ packingTemplates, household: normalizedHousehold }))
+        if(householdStorage.tablesReady && householdStorage.householdId){
+          await saveHouseholdData({ householdId: householdStorage.householdId, household: normalizedHousehold })
+        }
+      }catch(error){
+        if(isMissingHouseholdTablesError(error)){
+          setHouseholdStorage({ mode: 'app_state', householdId: null, tablesReady: false, realtime: false })
+          return
+        }
+        setTripsError(error.message || 'Klarte ikke å lagre familieoversikten.')
+      }
+    }, 700)
+    return () => window.clearTimeout(timer)
+  }, [supabaseMode, userStateReady, packingTemplates, household, householdStorage.tablesReady, householdStorage.householdId])
+
+  useEffect(() => {
+    if(!supabaseMode || !householdStorage.tablesReady || !householdStorage.householdId) return undefined
+    let refreshTimer = null
+    let cancelled = false
+    const unsubscribe = subscribeToHouseholdData({
+      householdId: householdStorage.householdId,
+      onChange: () => {
+        if(refreshTimer) window.clearTimeout(refreshTimer)
+        refreshTimer = window.setTimeout(async () => {
+          try{
+            const remoteHousehold = await fetchHouseholdData({ householdId: householdStorage.householdId })
+            if(cancelled) return
+            skipNextHouseholdSaveRef.current = true
+            setHousehold(current => mergeHouseholdTableData(current, remoteHousehold.household || {}))
+          }catch(error){
+            if(!isMissingHouseholdTablesError(error)) setTripsError(error.message || 'Klarte ikke å oppdatere familiehjemmet i sanntid.')
+          }
+        }, 350)
+      }
+    })
+    return () => {
+      cancelled = true
+      if(refreshTimer) window.clearTimeout(refreshTimer)
+      unsubscribe?.()
+    }
+  }, [supabaseMode, householdStorage.tablesReady, householdStorage.householdId])
 
   useEffect(() => {
     if(!testMode || !activeTrip) return
@@ -1947,12 +2479,290 @@ export function App({ session, testMode = false }){
   }
 
   return <div className="page"><main className="phone">
+    {view === 'home' && <FamilyHome trips={trips} family={family} household={household} updateHousehold={updateHousehold} openTrip={openTrip} setView={setView} loading={tripsLoading || familyLoading} error={tripsError || familyError} showSignOut={supabaseMode} householdStorage={householdStorage}/>} 
+    {view === 'calendar' && <FamilyCalendarView household={household} updateHousehold={updateHousehold} trips={trips} openTrip={openTrip} setView={setView}/>} 
+    {view === 'shopping' && <ShoppingListView household={household} updateHousehold={updateHousehold} setView={setView}/>} 
+    {view === 'tasks' && <HouseholdTasksView household={household} updateHousehold={updateHousehold} family={family} setView={setView}/>} 
+    {view === 'familyChat' && <FamilyChatView household={household} updateHousehold={updateHousehold} family={family} trips={trips} setView={setView}/>} 
     {view === 'trips' && <TripsView older={older} setOlder={setOlder} openTrip={openTrip} setView={setView} trips={trips} loading={tripsLoading} error={tripsError || familyError} testMode={testMode} showSignOut={supabaseMode} onJoinByCode={joinByInviteCode} familyCount={family.length}/>}
     {view === 'create' && <CreateTrip create={create} setCreate={setCreate} setView={setView} finishCreate={finishCreate} saving={savingCreate} error={tripsError} family={family}/>}
-    {view === 'trip' && activeTrip && <TripShell trip={activeTrip} setView={setView} tab={tab} setTab={setTab} mer={mer} setMer={setMer} members={members} setMembers={setMembers} events={events} setEvents={setEvents} packing={packing} setPacking={setPacking} packingTemplates={packingTemplates} savePackingTemplates={savePackingTemplates} expenses={expenses} setExpenses={setExpenses} matches={matches} setMatches={setMatches} messages={messages} setMessages={setMessages} documents={documents} setDocuments={setDocuments} documentTarget={documentTarget} setDocumentTarget={setDocumentTarget} photos={photos} setPhotos={setPhotos} logistics={logistics} setLogistics={setLogistics} deleteTrip={deleteActiveTrip} supabaseMode={supabaseMode} session={session} family={family} setFamily={setFamily} onApplyDocumentSuggestions={applyDocumentTripSuggestions}/>}
+    {view === 'trip' && activeTrip && <TripShell trip={activeTrip} setView={setView} tab={tab} setTab={setTab} mer={mer} setMer={setMer} members={members} setMembers={setMembers} events={events} setEvents={setEvents} packing={packing} setPacking={setPacking} packingTemplates={packingTemplates} savePackingTemplates={savePackingTemplates} expenses={expenses} setExpenses={setExpenses} matches={matches} setMatches={setMatches} messages={messages} setMessages={setMessages} documents={documents} setDocuments={setDocuments} documentTarget={documentTarget} setDocumentTarget={setDocumentTarget} photos={photos} setPhotos={setPhotos} logistics={logistics} setLogistics={setLogistics} deleteTrip={deleteActiveTrip} supabaseMode={supabaseMode} session={session} family={family} setFamily={setFamily} onApplyDocumentSuggestions={applyDocumentTripSuggestions} household={household} updateHousehold={updateHousehold}/>}
     {view === 'editTrip' && activeTrip && <EditTrip trip={activeTrip} setView={setView} saveTripEdits={saveTripEdits} saving={savingEdit} error={editError}/>}
-    {view === 'family' && <FamilyView family={family} setFamily={setFamily} setView={setView} loading={familyLoading} supabaseMode={supabaseMode} session={session}/>}
+    {view === 'family' && <FamilyView family={family} setFamily={setFamily} setView={setView} loading={familyLoading} supabaseMode={supabaseMode} session={session} householdStorage={householdStorage} reloadFamily={loadFamily}/>}
   </main></div>
+}
+
+
+
+function FamilyHome({ trips, family, household, updateHousehold, openTrip, setView, loading, error, showSignOut, householdStorage }){
+  const normalized = normalizeHouseholdState(household)
+  const agenda = buildFamilyAgenda(normalized, trips)
+  const nextAgenda = agenda[0]
+  const openShopping = normalized.shopping.filter(item => !item.checked)
+  const openTasks = normalized.tasks.filter(task => !task.done)
+  const latestMessages = normalized.messages.slice(-2)
+  const upcomingTrips = (Array.isArray(trips) ? trips : []).filter(trip => trip.status !== 'Tidligere').slice(0, 3)
+
+  return <section className="screen with-actions familyHomeScreen unifiedHomeScreen">
+    <header className="appHeader familyHomeTop">
+      <div className="brandRow"><img src="/logo-mark.png" alt="Travelvault"/><div><h1>Travelvault</h1><p>Familie, hverdag og reiser samlet</p></div></div>
+      {showSignOut && <button className="signOutBtn" onClick={() => supabase.auth.signOut()}>Logg ut</button>}
+    </header>
+    <div className="content gap-xl familyHomeContent">
+      {error && <div className="authMsg error">{error}</div>}
+      <section className="homeStatusGrid" aria-label="Oversikt">
+        <button className="homeStatusCard nextStatus" type="button" onClick={() => setView('calendar')}>
+          <small>Neste</small>
+          <b>{nextAgenda ? nextAgenda.title : 'Ingen avtaler i dag'}</b>
+          <span>{nextAgenda ? formatAgendaMeta(nextAgenda) : 'Legg inn en avtale, oppgave eller tur når noe skal planlegges.'}</span>
+        </button>
+        <button className="homeStatusCard" type="button" onClick={() => setView('calendar')}><small>Kalender</small><b>{agenda.length}</b><span>kommende punkt</span></button>
+        <button className="homeStatusCard" type="button" onClick={() => setView('tasks')}><small>Må ordnes</small><b>{openTasks.length}</b><span>åpne oppgaver</span></button>
+        <button className="homeStatusCard" type="button" onClick={() => setView('shopping')}><small>Handleliste</small><b>{openShopping.length}</b><span>varer mangler</span></button>
+      </section>
+      <p className="storageLine">{householdStorageStatusLabel(householdStorage)}</p>
+
+      <section className="familyActionGrid compactActions">
+        <FamilyHomeTile icon={CalendarDays} title="Kalender" text="Avtaler, oppgaver og reiser" onClick={() => setView('calendar')}/>
+        <FamilyHomeTile icon={ClipboardList} title="Må ordnes" text={`${openTasks.length || 'Ingen'} åpne oppgaver`} onClick={() => setView('tasks')}/>
+        <FamilyHomeTile icon={ListChecks} title="Handleliste" text={`${openShopping.length || 'Ingen'} varer mangler`} onClick={() => setView('shopping')}/>
+        <FamilyHomeTile icon={MessageSquare} title="Chat" text={latestMessages.length ? 'Siste meldinger klare' : 'Start felles chat'} onClick={() => setView('familyChat')}/>
+        <FamilyHomeTile icon={Plane} title="Planer og reiser" text={`${upcomingTrips.length} kommende`} onClick={() => setView('trips')}/>
+        <FamilyHomeTile icon={Users} title="Min familie" text={`${family.length || 'Legg til'} medlemmer`} onClick={() => setView('family')}/>
+      </section>
+
+      <section className="familyHomeGrid">
+        <div className="dashboardPanel familyPanel"><div className="dashboardSectionHead"><h2>Denne uken</h2><button className="textButton" type="button" onClick={() => setView('calendar')}>Åpne kalender</button></div><AgendaPreview agenda={agenda} openTrip={openTrip} openCalendar={() => setView('calendar')} openTasks={() => setView('tasks')}/></div>
+        <div className="dashboardAside"><HomeTasksPreview household={normalized} updateHousehold={updateHousehold} setView={setView}/><HomeShoppingPreview household={normalized} updateHousehold={updateHousehold} setView={setView}/><HomeChatPreview household={normalized} updateHousehold={updateHousehold} setView={setView}/></div>
+      </section>
+
+      <section><div className="dashboardSectionHead"><h2>Planer og reiser</h2><button className="textButton" type="button" onClick={() => setView('trips')}>Se alle</button></div>{loading && <Empty title="Henter planer" text="Laster familie, turer og brukerdata."/>}{!loading && upcomingTrips.length ? upcomingTrips.map(trip => <TripCard key={trip.id} trip={trip} openTrip={openTrip}/>) : !loading && <Empty title="Ingen turer ennå" text="Opprett første tur, cup eller helgeplan." action="Opprett ny tur" onAction={() => setView('create')}/>}</section>
+    </div>
+    <div className="bottomActions familyHomeActions"><button className="primary withIcon" onClick={() => setView('create')}><Plus size={18}/>Opprett ny tur</button><button className="secondary withIcon" type="button" onClick={() => setView('tasks')}><ClipboardList size={18}/>Må ordnes</button></div>
+  </section>
+}
+
+function FamilyHomeTile({ icon: Icon, title, text, onClick }){
+  return <button className="familyHomeTile" type="button" onClick={onClick}><span className="iconTile"><Icon size={18}/></span><b>{title}</b><small>{text}</small></button>
+}
+function AgendaPreview({ agenda, openTrip, openCalendar, openTasks }){
+  const rows = agenda.slice(0, 5)
+  if(!rows.length) return <Empty title="Ingen avtaler lagt inn" text="Legg inn trening, skole, bursdag, Spond/iCal eller andre avtaler familien må huske." action="Legg til avtale" onAction={openCalendar}/>
+  const openRow = row => {
+    if(row.trip) openTrip(row.trip)
+    else if(row.task && openTasks) openTasks()
+    else openCalendar()
+  }
+  return <div className="agendaList">{rows.map(row => <button className="agendaRow" key={row.id} type="button" onClick={() => openRow(row)}><span>{formatShortDate(row.date)}</span><div><b>{row.title}</b><small>{formatAgendaMeta(row)}{row.note ? ` · ${row.note}` : ''}</small></div><em>{row.kind === 'trip' ? 'Plan' : row.sourceLabel}</em></button>)}</div>
+}
+function HomeTasksPreview({ household, updateHousehold, setView }){
+  const [draft, setDraft] = useState('')
+  const tasks = normalizeHouseholdState(household).tasks
+  const openTasks = tasks.filter(task => !task.done)
+  const add = () => {
+    const title = draft.trim()
+    if(!title) return
+    updateHousehold(current => ({ tasks: [createTaskFromTitle(title), ...current.tasks] }))
+    setDraft('')
+  }
+  const toggle = (id) => updateHousehold(current => ({ tasks: current.tasks.map(task => task.id === id ? { ...task, done: !task.done, updatedAt: new Date().toISOString() } : task) }))
+  return <section className="dashboardPanel compactPanel"><div className="dashboardSectionHead"><h2>Må ordnes</h2><button className="textButton" type="button" onClick={() => setView('tasks')}>Åpne</button></div><div className="miniComposer"><input value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if(e.key === 'Enter'){ e.preventDefault(); add() } }} placeholder="Legg til oppgave"/><button type="button" onClick={add}>Legg til</button></div>{openTasks.slice(0, 4).map(task => <div className="familyMiniRow" key={task.id}><button className={`checkButton ${task.done ? 'checked' : ''}`} type="button" onClick={() => toggle(task.id)}>{task.done ? '✓' : ''}</button><span>{task.title}</span>{task.dueDate && <small>{formatShortDate(task.dueDate)}</small>}</div>)}{!openTasks.length && <p className="softText">Ingen åpne oppgaver.</p>}</section>
+}
+function HomeShoppingPreview({ household, updateHousehold, setView }){
+  const [draft, setDraft] = useState('')
+  const shopping = normalizeHouseholdState(household).shopping
+  const openItems = shopping.filter(item => !item.checked)
+  const add = () => {
+    const title = draft.trim()
+    if(!title) return
+    updateHousehold(current => ({ shopping: [createShoppingItemFromTitle(title), ...current.shopping] }))
+    setDraft('')
+  }
+  const toggle = (id) => updateHousehold(current => ({ shopping: current.shopping.map(item => item.id === id ? { ...item, checked: !item.checked, updatedAt: new Date().toISOString() } : item) }))
+  return <section className="dashboardPanel compactPanel"><div className="dashboardSectionHead"><h2>Handleliste</h2><button className="textButton" type="button" onClick={() => setView('shopping')}>Åpne</button></div><div className="miniComposer"><input value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if(e.key === 'Enter'){ e.preventDefault(); add() } }} placeholder="Legg til vare"/><button type="button" onClick={add}>Legg til</button></div>{openItems.slice(0, 4).map(item => <div className="familyMiniRow" key={item.id}><button className={`checkButton ${item.checked ? 'checked' : ''}`} type="button" onClick={() => toggle(item.id)}>{item.checked ? '✓' : ''}</button><span>{item.title}</span></div>)}{!openItems.length && <p className="softText">Handlelisten er tom.</p>}</section>
+}
+function HomeChatPreview({ household, updateHousehold, setView }){
+  const [draft, setDraft] = useState('')
+  const messages = normalizeHouseholdState(household).messages
+  const send = () => {
+    const text = draft.trim()
+    if(!text) return
+    updateHousehold(current => ({ messages: [...current.messages, { id: createClientId('family-msg'), author: 'Du', text, createdAt: new Date().toISOString(), threadId: 'family', threadTitle: 'Familien' }] }))
+    setDraft('')
+  }
+  return <section className="dashboardPanel compactPanel"><div className="dashboardSectionHead"><h2>Chat</h2><button className="textButton" type="button" onClick={() => setView('familyChat')}>Åpne</button></div>{messages.slice(-2).map(message => <div className="familyMessagePreview" key={message.id}><b>{message.threadTitle || message.author}</b><p>{message.text}</p></div>)}{!messages.length && <p className="softText">Ingen meldinger ennå.</p>}<div className="miniComposer"><input value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if(e.key === 'Enter'){ e.preventDefault(); send() } }} placeholder="Skriv rask beskjed"/><button type="button" onClick={send}>Send</button></div></section>
+}
+function ShoppingListView({ household, updateHousehold, setView }){
+  const [draft, setDraft] = useState('')
+  const [filter, setFilter] = useState('Mangler')
+  const shopping = normalizeHouseholdState(household).shopping
+  const rows = shopping.filter(item => filter === 'Alle' || (filter === 'Kjøpt' ? item.checked : !item.checked))
+  const add = () => {
+    const title = draft.trim()
+    if(!title) return
+    updateHousehold(current => ({ shopping: [createShoppingItemFromTitle(title), ...current.shopping] }))
+    setDraft('')
+  }
+  const toggle = (id) => updateHousehold(current => ({ shopping: current.shopping.map(item => item.id === id ? { ...item, checked: !item.checked, updatedAt: new Date().toISOString() } : item) }))
+  const remove = (id) => updateHousehold(current => ({ shopping: current.shopping.filter(item => item.id !== id) }))
+  return <section className="screen with-actions"><TopLine title="Handleliste" onBack={() => setView('home')}/><div className="content gap-xl"><section className="familyHeaderCard card"><div><h2>Felles handleliste</h2><p>Alle i familien deler samme liste. Pakkelistens «må kjøpes» kan nå sendes hit fra en tur.</p></div></section><div className="keepComposer card"><input value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if(e.key === 'Enter'){ e.preventDefault(); add() } }} placeholder="Skriv f.eks. melk, brød, solkrem …"/><button className="primary" type="button" onClick={add}>Legg til</button></div><div className="chips">{['Alle', 'Mangler', 'Kjøpt'].map(item => <button className={filter === item ? 'active' : ''} onClick={() => setFilter(item)} key={item}>{item}</button>)}</div>{rows.length ? rows.map(item => <div className="householdListRow" key={item.id}><button className={`checkButton ${item.checked ? 'checked' : ''}`} type="button" onClick={() => toggle(item.id)}>{item.checked ? '✓' : ''}</button><div><b className={item.checked ? 'done' : ''}>{item.title}</b><small>{[item.source === 'trip' ? 'Fra tur/pakkeliste' : 'Familieliste', item.note].filter(Boolean).join(' · ')}</small></div><button className="rowAction" type="button" onClick={() => remove(item.id)}>Fjern</button></div>) : <Empty title="Ingen varer" text="Legg til det familien må handle."/>}</div><div className="bottomActions"><button className="primary" type="button" onClick={() => setView('home')}>Til hjem</button></div></section>
+}
+function HouseholdTasksView({ household, updateHousehold, family, setView }){
+  const [filter, setFilter] = useState('Åpne')
+  const [draft, setDraft] = useState({ title: '', dueDate: '', person: '', priority: 'normal', notes: '' })
+  const tasks = normalizeHouseholdState(household).tasks
+  const rows = tasks
+    .filter(task => filter === 'Alle' || (filter === 'Ferdig' ? task.done : !task.done))
+    .sort((a, b) => sortableDateTime(a.dueDate, '').localeCompare(sortableDateTime(b.dueDate, '')) || a.createdAt.localeCompare(b.createdAt))
+  const updateDraft = patch => setDraft(current => ({ ...current, ...patch }))
+  const add = () => {
+    const title = draft.title.trim()
+    if(!title) return
+    updateHousehold(current => ({ tasks: [createTaskFromTitle(title, { dueDate: draft.dueDate, person: draft.person.trim(), priority: draft.priority, notes: draft.notes.trim() }), ...current.tasks] }))
+    setDraft({ title: '', dueDate: '', person: '', priority: 'normal', notes: '' })
+  }
+  const toggle = (id) => updateHousehold(current => ({ tasks: current.tasks.map(task => task.id === id ? { ...task, done: !task.done, updatedAt: new Date().toISOString() } : task) }))
+  const remove = (id) => updateHousehold(current => ({ tasks: current.tasks.filter(task => task.id !== id) }))
+  return <section className="screen with-actions"><TopLine title="Må ordnes" onBack={() => setView('home')}/><div className="content gap-xl"><section className="familyHeaderCard card"><div><h2>Familiens oppgaver</h2><p>Ting som må huskes, bestilles, betales eller avklares. Oppgaver med frist vises også i familiehjemmet og kalenderoversikten.</p></div></section><div className="inlineForm expanded taskForm"><input value={draft.title} onChange={e => updateDraft({ title: e.target.value })} onKeyDown={e => { if(e.key === 'Enter'){ e.preventDefault(); add() } }} placeholder="Hva må ordnes?"/><div className="two"><input type="date" value={draft.dueDate} onChange={e => updateDraft({ dueDate: e.target.value })}/><select value={draft.priority} onChange={e => updateDraft({ priority: e.target.value })}><option value="normal">Normal</option><option value="high">Viktig</option><option value="low">Lav</option></select></div><input value={draft.person} onChange={e => updateDraft({ person: e.target.value })} placeholder={family.length ? 'Hvem? F.eks. Ola' : 'Hvem gjelder det?'}/><textarea value={draft.notes} onChange={e => updateDraft({ notes: e.target.value })} placeholder="Notat"/><div><button type="button" onClick={() => setDraft({ title: '', dueDate: '', person: '', priority: 'normal', notes: '' })}>Tøm</button><button type="button" onClick={add}>Legg til oppgave</button></div></div><div className="chips">{['Åpne', 'Ferdig', 'Alle'].map(item => <button className={filter === item ? 'active' : ''} onClick={() => setFilter(item)} key={item}>{item}</button>)}</div>{rows.length ? rows.map(task => <div className="householdListRow taskListRow" key={task.id}><button className={`checkButton ${task.done ? 'checked' : ''}`} type="button" onClick={() => toggle(task.id)}>{task.done ? '✓' : ''}</button><div><b className={task.done ? 'done' : ''}>{task.title}</b><small>{[task.dueDate ? formatShortDate(task.dueDate) : '', task.person, task.priority === 'high' ? 'Viktig' : '', task.notes].filter(Boolean).join(' · ') || 'Ingen frist'}</small></div><button className="rowAction" type="button" onClick={() => remove(task.id)}>Fjern</button></div>) : <Empty title="Ingen oppgaver" text="Legg til noe familien må ordne."/>}</div><div className="bottomActions"><button className="primary" type="button" onClick={() => setView('home')}>Til hjem</button></div></section>
+}
+function FamilyChatView({ household, updateHousehold, family, trips = [], setView }){
+  const [draft, setDraft] = useState('')
+  const agendaThreads = buildFamilyAgenda(household, trips).slice(0, 5).map(row => ({ id: `agenda:${row.id}`, title: row.title, subtitle: row.sourceLabel }))
+  const threads = [{ id: 'family', title: 'Familien', subtitle: 'Felles chat' }, ...agendaThreads]
+  const [threadId, setThreadId] = useState('family')
+  const activeThread = threads.find(thread => thread.id === threadId) || threads[0]
+  const messages = normalizeHouseholdState(household).messages
+  const visibleMessages = messages.filter(message => (message.threadId || 'family') === activeThread.id)
+  const send = () => {
+    const text = draft.trim()
+    if(!text) return
+    updateHousehold(current => ({ messages: [...current.messages, { id: createClientId('family-msg'), author: 'Du', text, createdAt: new Date().toISOString(), threadId: activeThread.id, threadTitle: activeThread.title }] }))
+    setDraft('')
+  }
+  return <section className="screen with-actions"><TopLine title="Chat" onBack={() => setView('home')}/><div className="content gap-xl"><section className="familyHeaderCard card"><div><h2>Felles chat</h2><p>Beskjeder til hele familien, med egne tråder for kommende avtaler og planer.</p></div></section><div className="chips chatThreadChips">{threads.map(thread => <button className={threadId === thread.id ? 'active' : ''} type="button" onClick={() => setThreadId(thread.id)} key={thread.id}>{thread.title}</button>)}</div><div className="chatScreen"><div className="chatMessages">{visibleMessages.length ? visibleMessages.map(message => <div className={`chatBubble ${message.author === 'Du' ? 'mine' : ''}`} key={message.id}><b>{message.author}</b><p>{message.text}</p><small>{new Date(message.createdAt).toLocaleString('nb-NO', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</small></div>) : <Empty title="Ingen meldinger ennå" text={activeThread.id === 'family' ? (family.length ? `Start samtalen med ${family.length} familiemedlemmer.` : 'Legg til familien, eller skriv første beskjed her.') : `Start tråden for ${activeThread.title}.`}/>}</div><div className="chatComposer"><small>{activeThread.title}</small><textarea value={draft} onChange={e => setDraft(e.target.value)} placeholder="Skriv melding til familien"></textarea><button type="button" className="primary" onClick={send}>Send melding</button></div></div></div></section>
+}
+function CalendarIntegrationPanel({ household, updateHousehold, setImportMessage }){
+  const normalized = normalizeHouseholdState(household)
+  const [googleToken, setGoogleToken] = useState('')
+  const [calendars, setCalendars] = useState([])
+  const [selectedCalendarIds, setSelectedCalendarIds] = useState(() => normalized.calendarSources.google.selectedCalendarIds)
+  const [syncing, setSyncing] = useState(false)
+  const [syncError, setSyncError] = useState('')
+  const [syncMessage, setSyncMessage] = useState('')
+  const configReady = hasGoogleCalendarConfig()
+  const googleSource = normalized.calendarSources.google
+  const daysAhead = googleCalendarConfig().daysAhead
+
+  const upsertGoogleSource = (patch) => updateHousehold(current => ({ calendarSources: { ...current.calendarSources, google: { ...current.calendarSources.google, ...patch } } }))
+  const connectGoogle = async () => {
+    setSyncing(true)
+    setSyncError('')
+    setSyncMessage('')
+    try{
+      const token = await requestGoogleCalendarToken({ prompt: googleToken ? '' : 'consent' })
+      setGoogleToken(token)
+      const rows = await fetchGoogleCalendars(token)
+      setCalendars(rows)
+      const saved = normalized.calendarSources.google.selectedCalendarIds
+      const initialSelection = saved.length ? saved : rows.filter(calendar => calendar.primary).map(calendar => calendar.id)
+      setSelectedCalendarIds(initialSelection.length ? initialSelection : rows.slice(0, 3).map(calendar => calendar.id))
+      upsertGoogleSource({ connected: true, calendarNames: Object.fromEntries(rows.map(calendar => [calendar.id, calendar.name])) })
+      setSyncMessage(rows.length ? 'Google Kalender er koblet. Velg kalendere og trykk synkroniser.' : 'Google Kalender er koblet, men ingen lesbare kalendere ble funnet.')
+    }catch(error){
+      setSyncError(error.message || 'Klarte ikke å koble Google Kalender.')
+    }finally{
+      setSyncing(false)
+    }
+  }
+  const toggleCalendar = id => setSelectedCalendarIds(current => current.includes(id) ? current.filter(row => row !== id) : [...current, id])
+  const syncGoogle = async () => {
+    setSyncing(true)
+    setSyncError('')
+    setSyncMessage('')
+    try{
+      let token = googleToken
+      if(!token){
+        token = await requestGoogleCalendarToken({ prompt: googleSource.connected ? '' : 'consent' })
+        setGoogleToken(token)
+      }
+      let rows = calendars
+      if(!rows.length){
+        rows = await fetchGoogleCalendars(token)
+        setCalendars(rows)
+      }
+      const selectedIds = selectedCalendarIds.length ? selectedCalendarIds : (googleSource.selectedCalendarIds.length ? googleSource.selectedCalendarIds : rows.filter(calendar => calendar.primary).map(calendar => calendar.id))
+      const selectedCalendars = rows.filter(calendar => selectedIds.includes(calendar.id))
+      if(!selectedCalendars.length) throw new Error('Velg minst én kalender før synkronisering.')
+      const result = await fetchGoogleCalendarEvents({ accessToken: token, calendars: selectedCalendars, daysAhead })
+      const selectedSet = new Set(selectedCalendars.map(calendar => calendar.id))
+      updateHousehold(current => {
+        const base = normalizeHouseholdState(current)
+        const kept = base.calendarEvents.filter(event => !(event.sourceType === 'google' && selectedSet.has(event.calendarId)))
+        return {
+          calendarEvents: [...kept, ...result.events],
+          calendarSources: {
+            ...base.calendarSources,
+            google: {
+              connected: true,
+              selectedCalendarIds: selectedCalendars.map(calendar => calendar.id),
+              calendarNames: Object.fromEntries(rows.map(calendar => [calendar.id, calendar.name])),
+              lastImportAt: new Date().toISOString(),
+              lastImportCount: result.events.length
+            }
+          }
+        }
+      })
+      const warning = result.errors.length ? ` Noen kalendere feilet: ${result.errors.join(' ')}` : ''
+      setSyncMessage(`${result.events.length} avtaler hentet fra Google for de neste ${daysAhead} dagene.${warning}`)
+    }catch(error){
+      setSyncError(error.message || 'Klarte ikke å synkronisere Google Kalender.')
+    }finally{
+      setSyncing(false)
+    }
+  }
+  const importIcsFile = async (event) => {
+    const file = event.target.files?.[0]
+    if(!file) return
+    try{
+      const text = await readUploadedText(file)
+      const sourceLabel = /spond/i.test(file.name) ? 'Spond/iCal' : /google/i.test(file.name) ? 'Google iCal' : 'iCal-import'
+      const parsed = parseIcsEvents(text, sourceLabel)
+      if(!parsed.length){
+        setImportMessage('Fant ingen avtaler i iCal-filen.')
+        return
+      }
+      const current = normalizeHouseholdState(household)
+      const existingKeys = new Set(current.calendarEvents.map(row => row.sourceKey || `${row.source}-${row.title}-${row.date}-${row.time}`))
+      const fresh = parsed.filter(row => !existingKeys.has(row.sourceKey || `${row.source}-${row.title}-${row.date}-${row.time}`))
+      updateHousehold({ calendarEvents: [...current.calendarEvents, ...fresh] })
+      setImportMessage(`${fresh.length} av ${parsed.length} avtaler importert fra ${file.name}.`)
+    }catch(error){
+      setImportMessage(error.message || 'Klarte ikke å lese iCal-filen.')
+    }finally{
+      event.target.value = ''
+    }
+  }
+
+  return <section className="calendarIntegration card"><div><h2>Importer kalender</h2><p>Bruk iCal/ICS-fil for Spond eller andre kalendere. Google-visning vises bare når OAuth client-ID faktisk er satt.</p>{googleSource.lastImportAt && <small>Sist Google-sync: {new Date(googleSource.lastImportAt).toLocaleString('nb-NO')} · {googleSource.lastImportCount} avtaler</small>}</div><div className="integrationTools"><div className="integrationBadges"><span>Spond/iCal: klar</span>{configReady && <span>Google Kalender: klar</span>}</div>{configReady && <div className="calendarConnectBox"><div className="miniActionsWide"><button className="secondary" type="button" onClick={connectGoogle} disabled={syncing}>{googleSource.connected ? 'Koble på nytt' : 'Koble Google'}</button><button className="primary" type="button" onClick={syncGoogle} disabled={syncing}>{syncing ? 'Synker …' : 'Synkroniser'}</button></div>{calendars.length > 0 && <div className="calendarChoices">{calendars.map(calendar => <label key={calendar.id}><input type="checkbox" checked={selectedCalendarIds.includes(calendar.id)} onChange={() => toggleCalendar(calendar.id)}/><span>{calendar.name}</span></label>)}</div>}</div>}<label className="icsImportButton"><input aria-label="Velg .ics-fil" type="file" accept=".ics,text/calendar" onChange={importIcsFile}/><Upload size={16}/>Importer .ics-fil</label>{!configReady && <small>Google Calendar er ikke aktivert i denne lokale kjøringen.</small>}{syncError && <div className="authMsg error">{syncError}</div>}{syncMessage && <div className="authMsg ok">{syncMessage}</div>}</div></section>
+}
+function FamilyCalendarView({ household, updateHousehold, trips, openTrip, setView }){
+  const [formOpen, setFormOpen] = useState(false)
+  const [draft, setDraft] = useState({ title: '', date: isoToday(), time: '', person: '', location: '', source: 'Manuell', notes: '' })
+  const [importMessage, setImportMessage] = useState('')
+  const agenda = buildFamilyAgenda(household, trips)
+  const updateDraft = patch => setDraft(current => ({ ...current, ...patch }))
+  const add = () => {
+    if(!draft.title.trim()) return
+    updateHousehold(current => ({ calendarEvents: [...current.calendarEvents, { ...draft, id: createClientId('family-event'), title: draft.title.trim(), sourceType: 'manual', createdAt: new Date().toISOString() }] }))
+    setDraft({ title: '', date: isoToday(), time: '', person: '', location: '', source: 'Manuell', notes: '' })
+    setFormOpen(false)
+  }
+  const remove = (id) => updateHousehold(current => ({ calendarEvents: current.calendarEvents.filter(event => event.id !== id) }))
+  const openRow = row => {
+    if(row.trip) openTrip(row.trip)
+    else if(row.task) setView('tasks')
+  }
+  return <section className="screen with-actions"><TopLine title="Kalender" onBack={() => setView('home')}/><div className="content gap-xl"><CalendarIntegrationPanel household={household} updateHousehold={updateHousehold} setImportMessage={setImportMessage}/>{importMessage && <div className="authMsg ok">{importMessage}</div>}<section><div className="dashboardSectionHead"><h2>Avtaler og planer</h2><button className="primary mini" type="button" onClick={() => setFormOpen(true)}><Plus size={16}/>Legg til</button></div>{formOpen && <div className="inlineForm expanded familyCalendarForm"><input value={draft.title} onChange={e => updateDraft({ title: e.target.value })} placeholder="Tittel, f.eks. Trening"/><div className="two"><input type="date" value={draft.date} onChange={e => updateDraft({ date: e.target.value })}/><input type="time" value={draft.time} onChange={e => updateDraft({ time: e.target.value })}/></div><input value={draft.person} onChange={e => updateDraft({ person: e.target.value })} placeholder="Hvem gjelder det?"/><input value={draft.location} onChange={e => updateDraft({ location: e.target.value })} placeholder="Sted"/><select value={draft.source} onChange={e => updateDraft({ source: e.target.value })}><option>Manuell</option><option>Google Kalender</option><option>Spond</option><option>Skole</option></select><textarea value={draft.notes} onChange={e => updateDraft({ notes: e.target.value })} placeholder="Notat"/><div><button type="button" onClick={() => setFormOpen(false)}>Avbryt</button><button type="button" onClick={add}>Lagre avtale</button></div></div>}{agenda.length ? <div className="agendaList">{agenda.map(row => <div className="agendaRow calendarFullRow" key={row.id}><button type="button" onClick={() => openRow(row)}><span>{formatShortDate(row.date)}</span><div><b>{row.title}</b><small>{formatAgendaMeta(row)}{row.note ? ` · ${row.note}` : ''}</small></div><em>{row.kind === 'trip' ? 'Plan' : row.sourceLabel}</em></button>{row.kind === 'calendar' && <button className="rowAction" type="button" onClick={() => remove(row.id)}>Fjern</button>}</div>)}</div> : <Empty title="Ingen avtaler" text="Legg inn første avtale manuelt, importer .ics eller koble Google Kalender." action="Legg til avtale" onAction={() => setFormOpen(true)}/>}</section></div><div className="bottomActions"><button className="primary" type="button" onClick={() => setView('home')}>Til hjem</button></div></section>
 }
 
 function TripsView({ older, setOlder, openTrip, setView, trips, loading, error, testMode, showSignOut, onJoinByCode, familyCount }){
@@ -1976,7 +2786,7 @@ function TripsView({ older, setOlder, openTrip, setView, trips, loading, error, 
 
   const emptyText = testMode ? 'Opprett første tur for å teste flyten lokalt. Ingenting krever innlogging akkurat nå.' : 'Opprett første tur, så lagres den i Supabase og vises her neste gang du logger inn.'
 
-  return <section className="screen with-actions"><header className="appHeader"><div className="brandRow"><img src="/logo-mark.png" alt="Travelvault"/><div><h1>Travelvault</h1><p>Alt fra turen samlet på ett sted</p></div></div>{showSignOut && <button className="signOutBtn" onClick={() => supabase.auth.signOut()}>Logg ut</button>}</header><div className="content gap-xl">
+  return <section className="screen with-actions"><header className="appHeader"><div className="brandRow"><img src="/logo-mark.png" alt="Travelvault"/><div><h1>Planer og reiser</h1><p>Turer, cuper og ferier i samme Travelvault</p></div></div>{showSignOut && <button className="signOutBtn" onClick={() => supabase.auth.signOut()}>Logg ut</button>}</header><div className="content gap-xl">
     {error && <div className="authMsg error">{error}</div>}
     {joinError && <div className="authMsg error">{joinError}</div>}
     {joining && <div className="inlineForm"><input value={joinCode} onChange={e => setJoinCode(e.target.value.toUpperCase())} placeholder="Invitasjonskode"/><div><button onClick={() => setJoining(false)} type="button">Avbryt</button><button onClick={join} type="button">Bli med</button></div></div>}
@@ -1985,7 +2795,7 @@ function TripsView({ older, setOlder, openTrip, setView, trips, loading, error, 
     {!!ongoing.length && <TripSection title="Pågående" trips={ongoing} openTrip={openTrip}/>} 
     {!!upcoming.length && <TripSection title="Kommende" trips={upcoming} openTrip={openTrip}/>} 
     {!!previous.length && <div><button className="sectionToggle" onClick={() => setOlder(!older)}><span>Tidligere turer</span><b>{older ? 'Skjul' : 'Vis'}</b></button>{older && previous.map(trip => <TripCard key={trip.id} trip={trip} muted openTrip={openTrip}/>)}</div>}
-  </div><div className="bottomActions"><button className="primary withIcon" onClick={() => setView('create')}><Plus size={18}/>Opprett ny tur</button><button className="secondary withIcon" type="button" onClick={() => setView('family')}><Users size={18}/>Min familie{familyCount ? ` (${familyCount})` : ''}</button><button className="secondary withIcon" type="button" onClick={() => setJoining(true)}><UserPlus size={18}/>Bli med via invitasjonskode</button></div></section>
+  </div><div className="bottomActions"><button className="primary withIcon" onClick={() => setView('create')}><Plus size={18}/>Opprett ny tur</button><button className="secondary withIcon" type="button" onClick={() => setView('home')}>Til hjem</button><button className="secondary withIcon" type="button" onClick={() => setView('family')}><Users size={18}/>Min familie{familyCount ? ` (${familyCount})` : ''}</button><button className="secondary withIcon" type="button" onClick={() => setJoining(true)}><UserPlus size={18}/>Bli med via invitasjonskode</button></div></section>
 }
 
 function TripSection({ title, trips, openTrip }){
@@ -1997,9 +2807,9 @@ function TripCard({ trip, muted, openTrip }){
   return <button className={`tripCard ${muted ? 'muted' : ''}`} onClick={() => openTrip(trip)}>{trip.status === 'Pågår' && <span className="badge green">Pågår</span>}<h3>{trip.title}</h3>{meta && <p>{meta}</p>}<div className={`nextPill ${trip.status === 'Pågår' ? 'green' : 'blue'}`}><span></span>{trip.next}</div></button>
 }
 
-function FamilyView({ family, setFamily, setView, loading, supabaseMode }){
+function FamilyView({ family, setFamily, setView, loading, supabaseMode, householdStorage = {}, reloadFamily }){
   const [draft, setDraft] = useState({ name: '', email: '', relation: 'adult', invite: true })
-  const [formOpen, setFormOpen] = useState(false)
+  const [formOpen, setFormOpen] = useState(() => family.length === 0)
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
@@ -2007,6 +2817,7 @@ function FamilyView({ family, setFamily, setView, loading, supabaseMode }){
   const updateDraft = (patch) => setDraft(current => ({ ...current, ...patch }))
 
   const resetDraft = () => setDraft({ name: '', email: '', relation: 'adult', invite: true })
+  const canRemoveMember = member => member && member.relation !== 'self' && member.householdRole !== 'owner'
 
   const add = async () => {
     setError('')
@@ -2036,7 +2847,7 @@ function FamilyView({ family, setFamily, setView, loading, supabaseMode }){
         let nextMember = saved
         if(saved.email && draft.invite){
           try{
-            await inviteFamilyMember({ email: saved.email, displayName: saved.name, relation: saved.relation, familyMemberId: saved.id })
+            await inviteFamilyMember({ email: saved.email, displayName: saved.name, relation: saved.relation, familyMemberId: saved.id, householdId: householdStorage.householdId })
             nextMember = { ...saved, inviteStatus: 'invite_sent', invitedAt: new Date().toISOString() }
             setMessage('Familiemedlem lagret og invitasjon sendt.')
           }catch{
@@ -2047,6 +2858,7 @@ function FamilyView({ family, setFamily, setView, loading, supabaseMode }){
           setMessage('Familiemedlem lagret.')
         }
         setFamily(current => [...current.filter(member => member.id !== nextMember.id), nextMember])
+        if(typeof reloadFamily === 'function') await reloadFamily()
       }
       resetDraft()
       setFormOpen(false)
@@ -2061,10 +2873,17 @@ function FamilyView({ family, setFamily, setView, loading, supabaseMode }){
     setError('')
     setMessage('')
     const member = family.find(row => row.id === memberId)
+    if(!member) return
+    if(!canRemoveMember(member)){
+      setError('Eier eller egen bruker kan ikke fjernes her.')
+      return
+    }
     setFamily(current => current.filter(row => row.id !== memberId))
-    if(supabaseMode && member && !String(member.id).startsWith('local-')){
+    if(supabaseMode && !String(member.id).startsWith('local-')){
       try{
-        await deleteFamilyMember(member.id)
+        if(member.householdMemberId && member.userId) await deleteHouseholdMember(member.householdMemberId)
+        if(member.source === 'family_members') await deleteFamilyMember(member.id)
+        if(typeof reloadFamily === 'function') await reloadFamily()
       }catch(removeError){
         setFamily(current => [...current, member])
         setError(removeError.message || 'Klarte ikke å fjerne familiemedlem.')
@@ -2082,8 +2901,9 @@ function FamilyView({ family, setFamily, setView, loading, supabaseMode }){
       return
     }
     try{
-      await inviteFamilyMember({ email: member.email, displayName: member.name, relation: member.relation, familyMemberId: member.id })
+      await inviteFamilyMember({ email: member.email, displayName: member.name, relation: member.relation, familyMemberId: member.source === 'family_members' ? member.id : member.familyMemberId, householdId: householdStorage.householdId })
       setFamily(current => current.map(row => row.id === member.id ? { ...row, inviteStatus: 'invite_sent', invitedAt: new Date().toISOString() } : row))
+      if(typeof reloadFamily === 'function') await reloadFamily()
       setMessage('Invitasjon sendt på nytt.')
     }catch(inviteError){
       setFamily(current => current.map(row => row.id === member.id ? { ...row, inviteStatus: 'invite_failed' } : row))
@@ -2091,14 +2911,14 @@ function FamilyView({ family, setFamily, setView, loading, supabaseMode }){
     }
   }
 
-  return <section className="screen with-actions"><TopLine title="Min familie" onBack={() => setView('trips')}/><div className="content gap-xl familyPage">
-    <div className="familyHeaderCard card"><div><h2>Min familie</h2><p>Personene du ofte reiser med. De kan legges til som deltakere når du oppretter turer.</p></div><button className="primary withIcon" type="button" onClick={() => setFormOpen(true)}><Plus size={18}/>Legg til familie</button></div>
+  return <section className="screen with-actions"><TopLine title="Min familie" onBack={() => setView('home')}/><div className="content gap-xl familyPage">
+    <div className="familyHeaderCard card"><div><h2>Min familie</h2><p>Personene som deler familiehjemmet. De kan brukes i kalender, chat, handleliste og turer.</p></div><button className="primary withIcon" type="button" onClick={() => setFormOpen(true)}><Plus size={18}/>Legg til familie</button></div>
     {loading && <Empty title="Henter familie" text="Laster lagrede familiemedlemmer."/>}
     {message && <div className="authMsg ok">{message}</div>}
     {error && <div className="authMsg error">{error}</div>}
-    <div className="familyGrid">{family.length ? family.map(member => <article className="familyPersonCard" key={member.id}><div className="familyPersonTop"><Avatar name={member.name}/><div><h3>{member.name}</h3><p>{relationLabel(member.relation)}</p></div></div>{member.email && <p className="familyEmail">{member.email}</p>}<div className="familyPersonBottom"><em className={member.inviteStatus === 'invite_failed' || member.inviteStatus === 'failed' ? 'red' : 'green'}>{inviteStatusLabel(member.inviteStatus)}</em><div className="miniActions">{member.email && <button onClick={() => resendInvite(member)} type="button" title="Send invitasjon"><Mail size={15}/></button>}<button onClick={() => remove(member.id)} type="button" title="Fjern"><Trash2 size={15}/></button></div></div></article>) : <Empty title="Ingen familie registrert" text="Legg inn partner, barn eller andre som ofte skal være med på tur."/>}</div>
-    {formOpen && <div className="familyDrawer card"><div className="familyDrawerHead"><div><h2>Legg til familie</h2><p>Fyll inn det som trengs. E-post er valgfritt, men brukes til invitasjon senere.</p></div><button className="rowAction neutral" type="button" onClick={() => { setFormOpen(false); resetDraft() }}>Lukk</button></div><div className="inlineForm familyForm expanded"><input value={draft.name} onChange={e => updateDraft({ name: e.target.value })} placeholder="Navn"/><input type="email" value={draft.email} onChange={e => updateDraft({ email: e.target.value })} placeholder="E-post for invitasjon"/><select value={draft.relation} onChange={e => updateDraft({ relation: e.target.value })}>{relationOptions.map(([id, label]) => <option value={id} key={id}>{label}</option>)}</select><label className="checkRow"><input type="checkbox" checked={draft.invite} onChange={e => updateDraft({ invite: e.target.checked })}/><span>Send invitasjon automatisk når e-post finnes</span></label><div><button onClick={() => { resetDraft(); setFormOpen(false) }} type="button">Avbryt</button><button onClick={add} type="button" disabled={saving}>{saving ? 'Lagrer …' : 'Lagre'}</button></div></div></div>}
-  </div><div className="bottomActions"><button className="primary withIcon" type="button" onClick={() => setView('create')}><Plus size={18}/>Opprett tur</button><button className="secondary" type="button" onClick={() => setView('trips')}>Til turer</button></div></section>
+    <div className="familyGrid">{family.length ? family.map(member => <article className="familyPersonCard" key={member.id}><div className="familyPersonTop"><Avatar name={member.name}/><div><h3>{member.name}</h3><p>{relationLabel(member.relation)}</p></div></div>{member.email && <p className="familyEmail">{member.email}</p>}<div className="familyPersonBottom"><em className={member.inviteStatus === 'invite_failed' || member.inviteStatus === 'failed' ? 'red' : 'green'}>{inviteStatusLabel(member.inviteStatus)}</em><div className="miniActions">{member.email && member.inviteStatus !== 'accepted' && <button onClick={() => resendInvite(member)} type="button" title="Send invitasjon"><Mail size={15}/></button>}{canRemoveMember(member) && <button onClick={() => remove(member.id)} type="button" title="Fjern"><Trash2 size={15}/></button>}</div></div></article>) : <Empty title="Ingen familie registrert" text="Legg inn partner, barn eller andre som skal bruke familiehjemmet."/>}</div>
+    {formOpen && <div className="familyDrawer card"><div className="familyDrawerHead"><div><h2>Legg til familie</h2><p>Fyll inn det som trengs. E-post er valgfritt, men brukes til invitasjon senere.</p></div><button className="rowAction neutral" type="button" onClick={() => { setFormOpen(false); resetDraft() }}>Lukk</button></div><div className="inlineForm familyForm expanded"><input value={draft.name} onChange={e => updateDraft({ name: e.target.value })} placeholder="Navn"/><input type="email" value={draft.email} onChange={e => updateDraft({ email: e.target.value })} placeholder="E-post for invitasjon"/><select value={draft.relation} onChange={e => updateDraft({ relation: e.target.value })}>{relationOptions.map(([id, label]) => <option value={id} key={id}>{label}</option>)}</select><label className="checkRow"><input type="checkbox" checked={draft.invite} onChange={e => updateDraft({ invite: e.target.checked })}/><span>Send invitasjon automatisk når e-post finnes</span></label><div><button onClick={() => { resetDraft(); setFormOpen(false) }} type="button">Avbryt</button><button onClick={add} type="button" disabled={saving}>{saving ? 'Lagrer …' : 'Legg til i familie'}</button></div></div></div>}
+  </div><div className="bottomActions"><button className="primary withIcon" type="button" onClick={() => setView('create')}><Plus size={18}/>Opprett tur med familien</button><button className="secondary" type="button" onClick={() => setView('home')}>Til hjem</button></div></section>
 }
 
 function CreateTrip({ create, setCreate, setView, finishCreate, saving, error }){
@@ -2339,7 +3159,7 @@ function Field({ label, value, onChange, placeholder, type = 'text' }){
 }
 
 function TopLine({ title, trip, onBack }){
-  return <header className="topLine"><button onClick={onBack}><ChevronLeft size={20}/></button><div><h1>{title}</h1>{trip && <p>{trip.date} · {trip.members} deltakere</p>}</div></header>
+  return <header className="topLine"><button onClick={onBack} aria-label={`Tilbake fra ${title}`}><ChevronLeft size={20}/></button><div><h1>{title}</h1>{trip && <p>{trip.date} · {trip.members} deltakere</p>}</div></header>
 }
 
 function TripShell(props){
@@ -2348,6 +3168,7 @@ function TripShell(props){
   const visibleTabs = tabs.filter(([id]) => id !== 'utlegg' || features.expenses)
   const activeTab = visibleTabs.some(([id]) => id === tab) ? tab : 'na'
   const activeNav = activeTab === 'mer' ? mer : activeTab
+  const isDesktopLayout = typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(min-width: 980px)').matches
   const tripCaption = trip.date || dateLabel(trip.startDate, trip.endDate)
   const ownerLabel = members?.[0]?.name || trip.title || 'Travelvault'
   const navigate = (id) => {
@@ -2364,6 +3185,12 @@ function TripShell(props){
     setTab(id)
     setMer('list')
   }
+  const shoppingItems = normalizeHouseholdState(props.household).shopping
+  const addPackingItemsToShopping = (items) => {
+    if(!props.updateHousehold || !Array.isArray(items) || !items.length) return
+    props.updateHousehold(current => ({ shopping: [...items, ...current.shopping] }))
+  }
+
   const navGroups = [
     {
       label: tripCaption,
@@ -2388,24 +3215,24 @@ function TripShell(props){
   ]
 
   return <section className="screen tripScreen">
-    <div className="tripDesktopTop desktopOnly">
+    {isDesktopLayout && <div className="tripDesktopTop desktopOnly">
       <div className="tripBrand"><img src="/logo-mark.png" alt="Travelvault"/><span>Travelvault</span></div>
       <div className="tripBreadcrumb">› <span>{trip.title}</span></div>
       <div className="desktopAvatar">{initials(ownerLabel).slice(0,1)}</div>
-    </div>
+    </div>}
     <div className="tripLayout">
-      <aside className="desktopSidebar desktopOnly">
+      {isDesktopLayout && <aside className="desktopSidebar desktopOnly">
         {navGroups.map((group, groupIndex) => <div className={`desktopNavGroup ${groupIndex > 0 ? 'secondary' : ''}`} key={`group-${groupIndex}`}>
           {group.label ? <p className="desktopNavLabel">{group.label}</p> : <div className="desktopDivider"></div>}
           {group.rows.map(([id, Icon, label]) => <button key={id} type="button" className={`desktopNavItem ${activeNav === id ? 'active' : ''}`} onClick={() => navigate(id)}><span className="desktopNavIcon"><AppNavIcon id={id}/></span><span>{label}</span></button>)}
         </div>)}
-      </aside>
+      </aside>}
       <div className="tripMain">
         <TopLine title={trip.title} trip={trip} onBack={() => setView('trips')}/>
         <div className="content tripMainContent">
           {activeTab === 'na' && <NowView {...props}/>} 
           {activeTab === 'plan' && <PlanView events={props.events} setEvents={props.setEvents} documents={props.documents} setTab={setTab} setMer={setMer} setDocumentTarget={props.setDocumentTarget}/>} 
-          {activeTab === 'pakk' && <PackingView members={props.members} packing={props.packing} setPacking={props.setPacking} tripType={trip.type} customTemplates={props.packingTemplates} onCustomTemplatesChange={props.savePackingTemplates}/>} 
+          {activeTab === 'pakk' && <PackingView members={props.members} packing={props.packing} setPacking={props.setPacking} tripType={trip.type} customTemplates={props.packingTemplates} onCustomTemplatesChange={props.savePackingTemplates} tripId={trip.id} tripTitle={trip.title} shoppingItems={shoppingItems} onAddShoppingItems={addPackingItemsToShopping}/>} 
           {activeTab === 'utlegg' && <ExpensesView members={props.members} expenses={props.expenses} setExpenses={props.setExpenses}/>} 
           {activeTab === 'mer' && <MoreView {...props} mer={mer} setMer={setMer}/>} 
         </div>
@@ -2697,13 +3524,15 @@ function EventCard({ event, events, setEvents, documents = [], open, onClick }){
   return <div className="eventCard" onClick={onClick} role="button" tabIndex={0} onKeyDown={keyEvent => { if(keyEvent.key === 'Enter' || keyEvent.key === ' ') onClick() }}><div className="eventTop"><span className="iconTile"><Icon size={18}/></span><div><h3>{event.title}</h3>{meta && <p>{meta}</p>}</div><b className="status">{event.status}</b></div>{open && <div className="eventDetails">{event.note && <p>{event.note}</p>}{documents.length > 0 && <small>Vedlegg: {documents.map(document => document.title).join(', ')}</small>}{!editing && <div><button onClick={(e) => { e.stopPropagation(); setEditing(true) }} type="button">Rediger</button>{event.place && event.place !== 'Ikke satt' && <button onClick={openMap} type="button">Åpne kart</button>}</div>}{editing && <div className="eventEditForm" onClick={e => e.stopPropagation()}><input value={draft.title} onChange={e => setPatch({ title: e.target.value })} placeholder="Tittel"/><div className="two"><input type="date" value={draft.date} onChange={e => setPatch({ date: e.target.value })}/><input type="time" value={draft.time} onChange={e => setPatch({ time: e.target.value })}/></div><input value={draft.place} onChange={e => setPatch({ place: e.target.value })} placeholder="Sted"/><select value={draft.type} onChange={e => setPatch({ type: e.target.value })}><option value="activity">Aktivitet</option><option value="flight">Fly</option><option value="ferry">Båt/ferge</option><option value="car">Bil</option><option value="train">Tog</option><option value="bus">Buss</option><option value="transport">Annen transport</option><option value="hotel">Hotell/overnatting</option><option value="match">Kamp</option><option value="food">Mat</option></select><select value={draft.status} onChange={e => setPatch({ status: e.target.value })}><option>Planlagt</option><option>Bekreftet</option><option>Fullført</option><option>Avlyst</option></select><textarea value={draft.note} onChange={e => setPatch({ note: e.target.value })} placeholder="Detaljer/notat"/><div><button type="button" onClick={(e) => { e.stopPropagation(); setEditing(false) }}>Avbryt</button><button type="button" onClick={save}>Lagre</button></div></div>}</div>}</div>
 }
 
-function PackingView({ members, packing, setPacking, tripType = 'default', customTemplates: savedCustomTemplates = null, onCustomTemplatesChange = null }){
+
+function PackingView({ members, packing, setPacking, tripType = 'default', customTemplates: savedCustomTemplates = null, onCustomTemplatesChange = null, tripId = '', tripTitle = '', shoppingItems = [], onAddShoppingItems = null }){
   const [filter, setFilter] = useState('Alle')
   const [quickTitle, setQuickTitle] = useState('')
   const [localCustomTemplates, setLocalCustomTemplates] = useState(() => readCustomPackingTemplates())
   const [selectedTemplateId, setSelectedTemplateId] = useState('standard')
   const [creatingTemplate, setCreatingTemplate] = useState(false)
   const [templateDraft, setTemplateDraft] = useState({ name: '', items: '' })
+  const [shoppingBridgeMessage, setShoppingBridgeMessage] = useState('')
   const autoSeededRef = useRef(false)
   const standardTemplate = { id: 'standard', name: 'Standard pakkeliste', items: defaultPackingItemsForTripType(tripType) }
   const customTemplates = Array.isArray(savedCustomTemplates) ? savedCustomTemplates : localCustomTemplates
@@ -2717,6 +3546,9 @@ function PackingView({ members, packing, setPacking, tripType = 'default', custo
   }, [packing.length, setPacking, tripType])
 
   const visible = packing.filter(item => filter === 'Alle' || (filter === 'Mangler' && !item.packed) || (filter === 'Pakket' && item.packed) || (filter === 'Må kjøpes' && item.mustBuy))
+  const mustBuyItems = packing.filter(item => item.mustBuy && !item.packed)
+  const shoppingRefs = new Set(normalizeShoppingItems(shoppingItems).map(item => item.sourceRef).filter(Boolean))
+  const notInShopping = mustBuyItems.filter(item => !shoppingRefs.has(`trip:${tripId}:packing:${item.id}`))
   const addQuick = () => {
     const title = quickTitle.trim()
     if(!title) return
@@ -2744,6 +3576,17 @@ function PackingView({ members, packing, setPacking, tripType = 'default', custo
     setTemplateDraft({ name: '', items: '' })
     setCreatingTemplate(false)
   }
+  const sendMustBuyToShopping = () => {
+    if(!onAddShoppingItems || !notInShopping.length) return
+    const additions = notInShopping.map(item => createShoppingItemFromTitle(item.title, {
+      source: 'trip',
+      sourceRef: `trip:${tripId}:packing:${item.id}`,
+      category: smartPackingCategory(item),
+      note: tripTitle ? `Fra ${tripTitle}` : 'Fra pakkeliste'
+    }))
+    onAddShoppingItems(additions)
+    setShoppingBridgeMessage(`${additions.length} punkt lagt i felles handleliste.`)
+  }
   const categoriesToShow = categories
     .map(category => ({ category, rows: visible.filter(item => smartPackingCategory(item) === category) }))
     .filter(group => group.rows.length)
@@ -2755,7 +3598,8 @@ function PackingView({ members, packing, setPacking, tripType = 'default', custo
       <div className="packingTemplateActions"><button className="secondary" type="button" onClick={applyTemplate}>Bruk valgt</button><button className="primary" type="button" onClick={() => setCreatingTemplate(true)}><Plus size={18}/>Ny liste</button></div>
       {creatingTemplate && <div className="packingTemplateForm"><input value={templateDraft.name} onChange={e => setTemplateDraft({ ...templateDraft, name: e.target.value })} placeholder="Navn på pakkeliste"/><textarea value={templateDraft.items} onChange={e => setTemplateDraft({ ...templateDraft, items: e.target.value })} placeholder={'Ett punkt per linje\nPute\nEgg\nLader'}/><div><button type="button" onClick={() => { setCreatingTemplate(false); setTemplateDraft({ name: '', items: '' }) }}>Avbryt</button><button type="button" onClick={createTemplate}>Opprett</button></div></div>}
     </section>
-    <div className="keepComposer card"><input value={quickTitle} onChange={e => setQuickTitle(e.target.value)} onKeyDown={e => { if(e.key === 'Enter'){ e.preventDefault(); addQuick() } }} placeholder="Skriv f.eks. underbukser, mobil, lader …"/><button className="primary" type="button" onClick={addQuick}>Legg til</button></div>
+    <div className="keepComposer card"><input value={quickTitle} onChange={e => setQuickTitle(e.target.value)} onKeyDown={e => { if(e.key === 'Enter'){ e.preventDefault(); addQuick() } }} placeholder="Skriv f.eks. underbukser, mobil, lader …"/><button className="primary" type="button" onClick={addQuick}>Legg til</button><small>Bruk «Må kjøpes» på pakkepunkter som skal over i familiens handleliste.</small></div>
+    <section className="packShoppingBridge card"><div><h2>Handlekobling</h2><p>{mustBuyItems.length ? `${mustBuyItems.length} pakkepunkt er markert som må kjøpes.` : 'Marker pakkepunkter som må kjøpes, så kan de sendes til felles handleliste.'}</p>{shoppingBridgeMessage && <small className="success">{shoppingBridgeMessage}</small>}</div><button className="primary" type="button" onClick={sendMustBuyToShopping} disabled={!notInShopping.length}>{notInShopping.length ? `Send ${notInShopping.length} til handlelisten` : 'Alt er sendt'}</button></section>
     <div className="chips">{['Alle', 'Mangler', 'Pakket', 'Må kjøpes'].map(item => <button className={filter === item ? 'active' : ''} onClick={() => setFilter(item)} key={item}>{item}</button>)}</div>
     {categoriesToShow.map(group => <section className="packingCategory" key={group.category}><h2 className="sectionTitle">{group.category} <span>{group.rows.length}</span></h2>{group.rows.map(item => <PackRow key={item.id} item={item} setPacking={setPacking} packing={packing} subtitle={item.assignedTo ? assignedName(item.assignedTo) : group.category}/>)}</section>)}
     {!categoriesToShow.length && <Empty title="Ingen treff" text="Endre filteret for å se flere pakkepunkter."/>}
@@ -2763,7 +3607,8 @@ function PackingView({ members, packing, setPacking, tripType = 'default', custo
 }
 
 function PackRow({ item, packing, setPacking, subtitle = '' }){
-  return <div className="packRow"><button className={`checkButton ${item.packed ? 'checked' : ''}`} onClick={() => setPacking(packing.map(row => row.id === item.id ? { ...row, packed: !row.packed } : row))} type="button">{item.packed ? '✓' : ''}</button><div><b className={item.packed ? 'done' : ''}>{item.title}</b><small>{subtitle || item.category}</small></div>{item.mustBuy && <em>Må kjøpes</em>}<button className="rowAction" onClick={() => setPacking(packing.filter(row => row.id !== item.id))} type="button">Fjern</button></div>
+  const update = patch => setPacking(packing.map(row => row.id === item.id ? { ...row, ...patch } : row))
+  return <div className="packRow"><button className={`checkButton ${item.packed ? 'checked' : ''}`} onClick={() => update({ packed: !item.packed })} type="button">{item.packed ? '✓' : ''}</button><div><b className={item.packed ? 'done' : ''}>{item.title}</b><small>{subtitle || item.category}</small></div>{item.mustBuy && <em>Må kjøpes</em>}<button className="rowAction" onClick={() => update({ mustBuy: !item.mustBuy })} type="button">{item.mustBuy ? 'Ikke kjøp' : 'Må kjøpes'}</button><button className="rowAction" onClick={() => setPacking(packing.filter(row => row.id !== item.id))} type="button">Fjern</button></div>
 }
 
 function ExpensesView({ members, expenses, setExpenses }){
@@ -2771,7 +3616,7 @@ function ExpensesView({ members, expenses, setExpenses }){
   const [adding, setAdding] = useState(false)
   const total = expenses.reduce((sum, expense) => sum + expense.amount, 0)
   if(settlement) return <SettlementView members={members} expenses={expenses} back={() => setSettlement(false)}/>
-  return <><button className="summary" onClick={() => setSettlement(true)}><div><span>Totalt brukt</span><b>{formatMoney(total)}</b></div><em>Se oppgjør →</em></button>{!expenses.length && <Empty title="Ingen utlegg ennå" text="Legg inn manuelt eller scan en kvittering."/>}{expenses.map(expense => <ExpenseCard key={expense.id} expense={expense} members={members} expenses={expenses} setExpenses={setExpenses}/>) }<AddExpense members={members} expenses={expenses} setExpenses={setExpenses} open={adding} setOpen={setAdding}/></>
+  return <><button className="summary" onClick={() => setSettlement(true)}><div><span>Totalt brukt</span><b>{formatMoney(total)}</b></div><em>Se oppgjør →</em></button>{!expenses.length && <Empty title="Ingen utlegg ennå" text="Legg inn manuelt eller scan en kvittering." action="Legg til utlegg" onAction={() => setAdding(true)}/>} {expenses.map(expense => <ExpenseCard key={expense.id} expense={expense} members={members} expenses={expenses} setExpenses={setExpenses}/>) }<AddExpense members={members} expenses={expenses} setExpenses={setExpenses} open={adding} setOpen={setAdding}/></>
 }
 
 function ExpenseCard({ expense, members, expenses, setExpenses }){
@@ -3149,7 +3994,7 @@ function DocScreen({ trip, documents, setDocuments, events = [], members = [], s
     const meta = [documentTypeLabel(document.type), document.fileName, formatFileSize(document.fileSize), document.savedFile === false ? 'fil ikke lagret' : ''].filter(Boolean).join(' · ')
     const canOpen = Boolean(document.url || document.fileUrl)
     return <div className="doc card" key={document.id}><FileText size={20}/><div><b>{document.title}</b><small>{meta || documentTypeLabel(document.type)} · Gjelder: {appliesTo(document)}</small><span className="docHint">Tolket: {hint}</span></div><div className="docActions">{canOpen && <button className="rowAction neutral" onClick={() => openDocument(document)} type="button"><ExternalLink size={13}/> Åpne</button>}<button className="rowAction" onClick={() => remove(document)} type="button"><Trash2 size={13}/> Fjern</button></div></div>
-  }) : <Empty title="Ingen dokumenter" text="Velg flybilletter, hotellbekreftelser, kvitteringer, utflukter og andre dokumenter. Filen leses lokalt og lagres ikke." action="Last opp dokument" onAction={startAdding}/>} {!adding && <button className="dashed" onClick={startAdding}><Plus size={18}/> Last opp dokument</button>}{adding && <div className="inlineForm documentForm"><div className="analysisBox"><b>{saving ? 'Tolker og legger inn dokumentet automatisk.' : files.length > 1 ? 'Tolker og legger inn hver fil automatisk.' : files.length === 1 ? selectedAnalysis.summary : 'Velg ett eller flere dokumenter.'}</b><small>{files.length ? 'PDF, Word og bilder leses lokalt. Filene lagres ikke på server.' : 'Filvelgeren åpnes automatisk. Ingen manuell navngiving trengs.'}</small>{files.length > 0 && <small>{files.length === 1 ? `${files[0].name}${formatFileSize(files[0].size) ? ` · ${formatFileSize(files[0].size)}` : ''}` : `${files.length} filer valgt`}</small>}</div><div><button onClick={cancel} disabled={saving}>Avbryt</button><button onClick={openFilePicker} disabled={saving} type="button"><Upload size={15}/> Velg fil</button></div></div>}</>
+  }) : <Empty title="Ingen dokumenter" text="Velg flybilletter, hotellbekreftelser, kvitteringer, utflukter og andre dokumenter. Filen leses lokalt og lagres ikke." action="Les dokument" onAction={startAdding}/>} {!adding && <button className="dashed" onClick={startAdding}><Plus size={18}/> Les dokument</button>}{adding && <div className="inlineForm documentForm"><div className="analysisBox"><b>{saving ? 'Tolker og legger inn dokumentet automatisk.' : files.length > 1 ? 'Tolker og legger inn hver fil automatisk.' : files.length === 1 ? selectedAnalysis.summary : 'Velg ett eller flere dokumenter.'}</b><small>{files.length ? 'PDF, Word og bilder leses lokalt. Filene lagres ikke på server.' : 'Filvelgeren åpnes automatisk. Ingen manuell navngiving trengs.'}</small>{files.length > 0 && <small>{files.length === 1 ? `${files[0].name}${formatFileSize(files[0].size) ? ` · ${formatFileSize(files[0].size)}` : ''}` : `${files.length} filer valgt`}</small>}</div><div><button onClick={cancel} disabled={saving}>Avbryt</button><button onClick={openFilePicker} disabled={saving} type="button"><Upload size={15}/> Velg fil</button></div></div>}</>
 }
 
 function PhotoScreen({ photos, setPhotos }){
