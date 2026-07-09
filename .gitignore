@@ -1,5 +1,6 @@
 node_modules/
 dist/
+dist-check/
 .vite/
 .netlify/
 .vscode/
@@ -10,3 +11,9 @@ dist/
 
 *.log
 .DS_Store
+
+# Local archives/exports
+*.zip
+*.tar
+*.tar.gz
+*.tgz
