@@ -4,7 +4,7 @@
 
 [build.environment]
   NODE_VERSION = "22.13.0"
-  NPM_VERSION = "9.9.4"
+  NPM_VERSION = "10.9.2"
   VITE_ENABLE_AUTH = "true"
   VITE_DISABLE_GOOGLE_AUTH = "false"
 

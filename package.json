@@ -2,7 +2,7 @@
   "name": "travelvault-mvp-shell",
   "version": "0.7.0",
   "private": true,
-  "packageManager": "npm@9.9.4",
+  "packageManager": "npm@10.9.2",
   "engines": {
     "node": ">=22.13.0"
   },
