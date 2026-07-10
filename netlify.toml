@@ -3,8 +3,7 @@
   publish = "dist"
 
 [build.environment]
-  NODE_VERSION = "22.13.0"
-  NPM_VERSION = "10.9.2"
+  NODE_VERSION = "20.19.0"
   NPM_FLAGS = "--omit=dev"
   NODE_ENV = "production"
   VITE_ENABLE_AUTH = "true"
