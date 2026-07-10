@@ -48,7 +48,7 @@ const tabs = [
 const categories = ['Dokumenter', 'Klær', 'Hygiene', 'Elektronikk', 'Medisin', 'Mat/snacks', 'Søvn/overnatting', 'Barn', 'Diverse']
 const emptyTripContent = { members: [], events: [], packing: [], expenses: [], matches: [], messages: [] }
 const authEnabled = Boolean(supabase) && import.meta.env.VITE_ENABLE_AUTH !== 'false'
-const googleAuthEnabled = authEnabled && import.meta.env.VITE_ENABLE_GOOGLE_AUTH !== 'false'
+const googleAuthEnabled = authEnabled && import.meta.env.VITE_DISABLE_GOOGLE_AUTH !== 'true'
 const testStateKey = 'travelvault-test-state-v2'
 const customPackingTemplatesKey = 'travelvault-packing-templates-v1'
 const pendingHouseholdInviteKey = 'travelvault-pending-household-invite'
