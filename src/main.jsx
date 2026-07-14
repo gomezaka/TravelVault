@@ -1,10 +1,10 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { Bell, CalendarDays, Camera, ChevronLeft, ClipboardList, ExternalLink, FileText, Home, ListChecks, Mail, MessageSquare, MoreHorizontal, PiggyBank, Plus, Search, Settings, Trash2, Trophy, Upload, UserPlus, Users, MapPin, Plane, Hotel, Ship, Utensils, RefreshCw, Car, Bus, TrainFront } from 'lucide-react'
+import { Bell, CalendarDays, Camera, ChevronLeft, ClipboardList, ExternalLink, FileText, Home, ListChecks, LogOut, Mail, MessageSquare, MoreHorizontal, PiggyBank, Plus, Search, Settings, Trash2, Trophy, Upload, UserCircle, UserPlus, Users, MapPin, Plane, Hotel, Ship, Utensils, RefreshCw, Car, Bus, TrainFront } from 'lucide-react'
 import { supabase } from './lib/supabase'
 import { addTripMemberToTrip, createTripDocumentSignedUrl, createTripWithMembers, deleteFamilyMember, deleteTripById, deleteTripDocumentById, fetchDocumentsForTrip, fetchFamilyMembersForUser, fetchMembersForTrip, fetchTripsForUser, fetchUserAppState, inviteFamilyMember, saveFamilyMember, updateTripAppState, updateTripDetails, updateTripDocumentMetadata, updateUserAppState } from './lib/tripRepository'
 import { searchLocations } from './lib/locationSearch'
-import { fetchGoogleCalendarEvents, fetchGoogleCalendars, googleCalendarConfig, hasGoogleCalendarConfig, requestGoogleCalendarToken } from './lib/googleCalendar'
+import { GOOGLE_CALENDAR_SCOPE, fetchGoogleCalendarEvents, fetchGoogleCalendars, googleCalendarConfig, hasGoogleCalendarConfig, requestGoogleCalendarToken } from './lib/googleCalendar'
 import { acceptHouseholdInvite, deleteHouseholdMember, fetchHouseholdData, isMissingHouseholdTablesError, saveHouseholdData, subscribeToHouseholdData } from './lib/householdRepository'
 import './styles/app.css'
 
@@ -45,14 +45,25 @@ const tabs = [
   ['utlegg', PiggyBank, 'Utlegg'],
   ['mer', MoreHorizontal, 'Mer']
 ]
+const familyNavItems = [
+  ['home', Home, 'Hjem'],
+  ['trips', Plane, 'Reiser'],
+  ['tasks', ClipboardList, 'Gjøremål'],
+  ['calendar', CalendarDays, 'Kalender'],
+  ['profile', UserCircle, 'Profil']
+]
+const familyNavViews = new Set(['home', 'calendar', 'shopping', 'tasks', 'familyChat', 'trips', 'family', 'profile'])
 const categories = ['Dokumenter', 'Klær', 'Hygiene', 'Elektronikk', 'Medisin', 'Mat/snacks', 'Søvn/overnatting', 'Barn', 'Diverse']
 const emptyTripContent = { members: [], events: [], packing: [], expenses: [], matches: [], messages: [] }
-const authEnabled = Boolean(supabase) && import.meta.env.VITE_ENABLE_AUTH !== 'false'
+const authExplicitlyDisabled = import.meta.env.VITE_ENABLE_AUTH === 'false'
+const localTestModeEnabled = authExplicitlyDisabled && import.meta.env.DEV
+const authEnabled = Boolean(supabase) && !authExplicitlyDisabled
 const googleAuthEnabled = authEnabled && import.meta.env.VITE_DISABLE_GOOGLE_AUTH !== 'true'
 const testStateKey = 'travelvault-test-state-v2'
 const customPackingTemplatesKey = 'travelvault-packing-templates-v1'
 const pendingHouseholdInviteKey = 'travelvault-pending-household-invite'
 const activeHouseholdIdKey = 'travelvault-active-household-id'
+const googleCalendarProviderTokenKey = 'travelvault-google-calendar-provider-token'
 const legacyTestStateKeys = ['travelvault-test-state-v1']
 const legacyDemoTripIds = new Set(['danmark-cup-2027', 'italia-2027', 'sverige-2025'])
 const legacyDemoTripTitles = new Set(['Danmark Cup 2027', 'Italia sommerferie', 'Sverige høsttur 2025'])
@@ -1805,7 +1816,31 @@ function RootRouter(){
   const path = window.location.pathname.replace(/\/$/, '')
   if(path === '/privacy') return <PolicyPage type="privacy" />
   if(path === '/terms') return <PolicyPage type="terms" />
-  return authEnabled ? <AuthGate /> : <App testMode />
+  if(localTestModeEnabled) return <App testMode />
+  return authEnabled ? <AuthGate /> : <MissingSupabaseConfig />
+}
+
+function activeFamilyNavId(view){
+  if(view === 'family' || view === 'profile') return 'profile'
+  if(view === 'shopping' || view === 'familyChat') return 'home'
+  return familyNavItems.some(([id]) => id === view) ? view : 'home'
+}
+
+function readGoogleCalendarProviderToken(){
+  if(typeof window === 'undefined') return ''
+  return window.localStorage.getItem(googleCalendarProviderTokenKey) || ''
+}
+
+function persistGoogleCalendarProviderToken(session){
+  if(typeof window === 'undefined') return
+  if(session?.provider_token){
+    window.localStorage.setItem(googleCalendarProviderTokenKey, session.provider_token)
+  }
+}
+
+function clearGoogleCalendarProviderToken(){
+  if(typeof window === 'undefined') return
+  window.localStorage.removeItem(googleCalendarProviderTokenKey)
 }
 
 function LoadingSplash({ progress = 65, loadingText = 'Laster inn turer, billetter, dokumenter og minner ...', footerText = 'Synkroniserer innhold ...' }){
@@ -1876,11 +1911,14 @@ function AuthGate(){
     if(!supabase) return undefined
 
     supabase.auth.getSession().then(({ data }) => {
+      persistGoogleCalendarProviderToken(data.session)
       setSession(data.session)
       setLoading(false)
     })
 
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+    const { data: listener } = supabase.auth.onAuthStateChange((event, nextSession) => {
+      if(event === 'SIGNED_OUT') clearGoogleCalendarProviderToken()
+      else persistGoogleCalendarProviderToken(nextSession)
       setSession(nextSession)
       setLoading(false)
     })
@@ -1950,7 +1988,12 @@ function AuthGate(){
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
-        redirectTo: window.location.origin
+        redirectTo: window.location.origin,
+        scopes: `openid email profile ${GOOGLE_CALENDAR_SCOPE}`,
+        queryParams: {
+          access_type: 'offline',
+          prompt: 'consent'
+        }
       }
     })
     if(error){
@@ -1966,14 +2009,14 @@ function AuthGate(){
   }
 
   if(!session){
-    return <div className="page"><main className="phone"><section className="screen authScreen"><div className="authCard"><img src="/logo-mark.png" alt="Travelvault"/><h1>Travelvault</h1><p>Alt fra turen samlet på ett sted.</p>{pendingInviteToken && <div className="authMsg ok">Familieinvitasjonen er klar. Logg inn med e-posten invitasjonen ble sendt til.</div>}{googleAuthEnabled && <><button className="googleBtn" onClick={signInWithGoogle} type="button"><span>G</span>Fortsett med Google</button><div className="authDivider"><span></span><b>eller</b><span></span></div></>}<label className="field"><span>E-post</span><input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="navn@epost.no"/></label>{authError && <div className="authMsg error">{authError}</div>}{message && <div className="authMsg ok">{message}</div>}<button className="primary" onClick={signIn}>Logg inn med e-postlenke</button><small>{googleAuthEnabled ? 'Du kan logge inn med Google eller e-postlenke. Google OAuth må være aktivert i Supabase Auth.' : 'Google-innlogging er skjult til OAuth er konfigurert i Supabase. Bruk e-postlenke for testing nå.'}</small><div className="policyLinks"><a href="/privacy">Personvern</a><a href="/terms">Vilkår</a></div></div></section></main></div>
+    return <div className="page"><main className="phone"><section className="screen authScreen"><div className="authCard"><img src="/logo-mark.png" alt="Travelvault"/><h1>Travelvault</h1><p>Alt fra turen samlet på ett sted.</p>{pendingInviteToken && <div className="authMsg ok">Familieinvitasjonen er klar. Logg inn med e-posten invitasjonen ble sendt til.</div>}{googleAuthEnabled && <><button className="googleBtn" onClick={signInWithGoogle} type="button"><span>G</span>Fortsett med Google</button><div className="authDivider"><span></span><b>eller</b><span></span></div></>}<label className="field"><span>E-post</span><input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="navn@epost.no"/></label>{authError && <div className="authMsg error">{authError}</div>}{message && <div className="authMsg ok">{message}</div>}<button className="primary" onClick={signIn}>Logg inn med e-postlenke</button><small>{googleAuthEnabled ? 'Google-innlogging ber også om lesetilgang til Google Kalender, slik at Spond-aktiviteter som ligger der kan importeres.' : 'Google-innlogging er skjult til OAuth er konfigurert i Supabase. Bruk e-postlenke for testing nå.'}</small><div className="policyLinks"><a href="/privacy">Personvern</a><a href="/terms">Vilkår</a></div></div></section></main></div>
   }
 
   return <App session={session} />
 }
 
 function MissingSupabaseConfig(){
-  return <div className="page"><main className="phone"><section className="screen authScreen"><div className="authCard"><img src="/logo-mark.png" alt="Travelvault"/><h1>Travelvault</h1><p>Supabase mangler i miljøoppsettet.</p><div className="authMsg error">Legg inn VITE_SUPABASE_URL og VITE_SUPABASE_ANON_KEY i .env.local for å teste med ekte brukere og lagring.</div><small>Appen starter nå uten falske turer eller forhåndsutfylte data.</small></div></section></main></div>
+  return <div className="page"><main className="phone"><section className="screen authScreen"><div className="authCard"><img src="/logo-mark.png" alt="Travelvault"/><h1>Travelvault</h1><p>Innlogging er ikke riktig konfigurert.</p><div className="authMsg error">Travelvault krever Supabase Auth. Legg inn VITE_SUPABASE_URL og VITE_SUPABASE_ANON_KEY i miljøvariablene for denne deployen.</div><small>Testmodus er bare tilgjengelig lokalt i utvikling når VITE_ENABLE_AUTH=false.</small></div></section></main></div>
 }
 
 function PolicyPage({ type }){
@@ -2478,9 +2521,12 @@ export function App({ session, testMode = false }){
     return <div className="page"><main className="phone"><LoadingSplash progress={startupProgress}/></main></div>
   }
 
-  return <div className="page"><main className="phone">
+  const familyNavVisible = familyNavViews.has(view)
+  const shellClass = ['phone', familyNavVisible ? 'familyNavActive' : ''].filter(Boolean).join(' ')
+
+  return <div className="page"><main className={shellClass}>
     {view === 'home' && <FamilyHome trips={trips} family={family} household={household} updateHousehold={updateHousehold} openTrip={openTrip} setView={setView} loading={tripsLoading || familyLoading} error={tripsError || familyError} showSignOut={supabaseMode} householdStorage={householdStorage}/>} 
-    {view === 'calendar' && <FamilyCalendarView household={household} updateHousehold={updateHousehold} trips={trips} openTrip={openTrip} setView={setView}/>} 
+    {view === 'calendar' && <FamilyCalendarView household={household} updateHousehold={updateHousehold} trips={trips} openTrip={openTrip} setView={setView} session={session}/>} 
     {view === 'shopping' && <ShoppingListView household={household} updateHousehold={updateHousehold} setView={setView}/>} 
     {view === 'tasks' && <HouseholdTasksView household={household} updateHousehold={updateHousehold} family={family} setView={setView}/>} 
     {view === 'familyChat' && <FamilyChatView household={household} updateHousehold={updateHousehold} family={family} trips={trips} setView={setView}/>} 
@@ -2489,6 +2535,8 @@ export function App({ session, testMode = false }){
     {view === 'trip' && activeTrip && <TripShell trip={activeTrip} setView={setView} tab={tab} setTab={setTab} mer={mer} setMer={setMer} members={members} setMembers={setMembers} events={events} setEvents={setEvents} packing={packing} setPacking={setPacking} packingTemplates={packingTemplates} savePackingTemplates={savePackingTemplates} expenses={expenses} setExpenses={setExpenses} matches={matches} setMatches={setMatches} messages={messages} setMessages={setMessages} documents={documents} setDocuments={setDocuments} documentTarget={documentTarget} setDocumentTarget={setDocumentTarget} photos={photos} setPhotos={setPhotos} logistics={logistics} setLogistics={setLogistics} deleteTrip={deleteActiveTrip} supabaseMode={supabaseMode} session={session} family={family} setFamily={setFamily} onApplyDocumentSuggestions={applyDocumentTripSuggestions} household={household} updateHousehold={updateHousehold}/>}
     {view === 'editTrip' && activeTrip && <EditTrip trip={activeTrip} setView={setView} saveTripEdits={saveTripEdits} saving={savingEdit} error={editError}/>}
     {view === 'family' && <FamilyView family={family} setFamily={setFamily} setView={setView} loading={familyLoading} supabaseMode={supabaseMode} session={session} householdStorage={householdStorage} reloadFamily={loadFamily}/>}
+    {view === 'profile' && <ProfileView session={session} family={family} householdStorage={householdStorage} setView={setView} supabaseMode={supabaseMode}/>}
+    {familyNavVisible && <FamilyBottomNav view={view} setView={setView}/>}
   </main></div>
 }
 
@@ -2545,6 +2593,51 @@ function FamilyHome({ trips, family, household, updateHousehold, openTrip, setVi
 function FamilyHomeTile({ icon: Icon, title, text, onClick }){
   return <button className="familyHomeTile" type="button" onClick={onClick}><span className="iconTile"><Icon size={18}/></span><b>{title}</b><small>{text}</small></button>
 }
+
+function FamilyBottomNav({ view, setView }){
+  const activeId = activeFamilyNavId(view)
+  return <nav className="familyBottomNav" aria-label="Hovedmeny">
+    {familyNavItems.map(([id, Icon, label]) => <button key={id} type="button" className={activeId === id ? 'active' : ''} aria-current={activeId === id ? 'page' : undefined} onClick={() => setView(id)}><Icon size={20}/><span>{label}</span></button>)}
+  </nav>
+}
+
+function ProfileView({ session, family, householdStorage, setView, supabaseMode }){
+  const user = session?.user || {}
+  const metadata = user.user_metadata || {}
+  const displayName = metadata.full_name || metadata.name || user.email?.split('@')[0] || 'Travelvault-bruker'
+  const avatarUrl = metadata.avatar_url || metadata.picture || ''
+  const usesGoogle = user.app_metadata?.provider === 'google' || user.identities?.some(identity => identity.provider === 'google')
+  const loginMethod = supabaseMode ? (usesGoogle ? 'Google' : 'E-postlenke') : 'Lokal testmodus'
+  const initials = displayName.split(/\s+/).filter(Boolean).slice(0, 2).map(part => part[0]).join('').toUpperCase() || 'TV'
+
+  return <section className="screen with-actions profileScreen">
+    <TopLine title="Profil" onBack={() => setView('home')}/>
+    <div className="content gap-xl">
+      <section className="profileHeroCard card">
+        <div className="profileIdentity">
+          {avatarUrl ? <img src={avatarUrl} alt="" className="profileAvatar"/> : <span className="profileAvatar fallback">{initials}</span>}
+          <div>
+            <h2>{displayName}</h2>
+            <p>{user.email || 'Ingen e-post i lokal testmodus'}</p>
+          </div>
+        </div>
+        <div className="profileMetaGrid">
+          <div><small>Innlogging</small><b>{loginMethod}</b></div>
+          <div><small>Familie</small><b>{family.length || 0} medlemmer</b></div>
+          <div><small>Lagring</small><b>{householdStorageStatusLabel(householdStorage)}</b></div>
+        </div>
+      </section>
+
+      <section className="profileActionList card">
+        <button type="button" onClick={() => setView('family')}><Users size={18}/><span>Min familie</span></button>
+        <button type="button" onClick={() => setView('calendar')}><CalendarDays size={18}/><span>Kalender og Spond via Google</span></button>
+        <button type="button" onClick={() => setView('trips')}><Plane size={18}/><span>Planer og reiser</span></button>
+        {supabaseMode && <button className="dangerText" type="button" onClick={() => supabase?.auth.signOut()}><LogOut size={18}/><span>Logg ut</span></button>}
+      </section>
+    </div>
+  </section>
+}
+
 function AgendaPreview({ agenda, openTrip, openCalendar, openTasks }){
   const rows = agenda.slice(0, 5)
   if(!rows.length) return <Empty title="Ingen avtaler lagt inn" text="Legg inn trening, skole, bursdag, Spond/iCal eller andre avtaler familien må huske." action="Legg til avtale" onAction={openCalendar}/>
@@ -2641,17 +2734,51 @@ function FamilyChatView({ household, updateHousehold, family, trips = [], setVie
   }
   return <section className="screen with-actions"><TopLine title="Chat" onBack={() => setView('home')}/><div className="content gap-xl"><section className="familyHeaderCard card"><div><h2>Felles chat</h2><p>Beskjeder til hele familien, med egne tråder for kommende avtaler og planer.</p></div></section><div className="chips chatThreadChips">{threads.map(thread => <button className={threadId === thread.id ? 'active' : ''} type="button" onClick={() => setThreadId(thread.id)} key={thread.id}>{thread.title}</button>)}</div><div className="chatScreen"><div className="chatMessages">{visibleMessages.length ? visibleMessages.map(message => <div className={`chatBubble ${message.author === 'Du' ? 'mine' : ''}`} key={message.id}><b>{message.author}</b><p>{message.text}</p><small>{new Date(message.createdAt).toLocaleString('nb-NO', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</small></div>) : <Empty title="Ingen meldinger ennå" text={activeThread.id === 'family' ? (family.length ? `Start samtalen med ${family.length} familiemedlemmer.` : 'Legg til familien, eller skriv første beskjed her.') : `Start tråden for ${activeThread.title}.`}/>}</div><div className="chatComposer"><small>{activeThread.title}</small><textarea value={draft} onChange={e => setDraft(e.target.value)} placeholder="Skriv melding til familien"></textarea><button type="button" className="primary" onClick={send}>Send melding</button></div></div></div></section>
 }
-function CalendarIntegrationPanel({ household, updateHousehold, setImportMessage }){
+function CalendarIntegrationPanel({ household, updateHousehold, setImportMessage, session }){
   const normalized = normalizeHouseholdState(household)
-  const [googleToken, setGoogleToken] = useState('')
+  const [googleToken, setGoogleToken] = useState(() => session?.provider_token || readGoogleCalendarProviderToken())
   const [calendars, setCalendars] = useState([])
   const [selectedCalendarIds, setSelectedCalendarIds] = useState(() => normalized.calendarSources.google.selectedCalendarIds)
   const [syncing, setSyncing] = useState(false)
   const [syncError, setSyncError] = useState('')
   const [syncMessage, setSyncMessage] = useState('')
   const configReady = hasGoogleCalendarConfig()
+  const providerTokenReady = Boolean(googleToken || session?.provider_token || readGoogleCalendarProviderToken())
+  const googleReady = providerTokenReady || configReady
   const googleSource = normalized.calendarSources.google
   const daysAhead = googleCalendarConfig().daysAhead
+
+  useEffect(() => {
+    const token = session?.provider_token || readGoogleCalendarProviderToken()
+    if(token) setGoogleToken(token)
+  }, [session?.provider_token])
+
+  const getCalendarToken = async ({ prompt = 'consent' } = {}) => {
+    const existing = googleToken || session?.provider_token || readGoogleCalendarProviderToken()
+    if(existing){
+      setGoogleToken(existing)
+      return existing
+    }
+    if(!configReady) throw new Error('Google-innloggingen mangler kalendertilgang. Logg ut og inn med Google igjen, og godkjenn lesetilgang til Google Kalender.')
+    const token = await requestGoogleCalendarToken({ prompt })
+    setGoogleToken(token)
+    return token
+  }
+
+  const loadGoogleCalendars = async (token) => {
+    try{
+      return { token, rows: await fetchGoogleCalendars(token) }
+    }catch(error){
+      const authLikeError = /auth|token|scope|permission|forbidden|unauthorized|401|403/i.test(error.message || '')
+      if(configReady && authLikeError){
+        const freshToken = await requestGoogleCalendarToken({ prompt: 'consent' })
+        setGoogleToken(freshToken)
+        return { token: freshToken, rows: await fetchGoogleCalendars(freshToken) }
+      }
+      if(authLikeError) throw new Error('Google-innloggingen mangler kalendertilgang. Logg ut og inn med Google igjen, og godkjenn lesetilgang til Google Kalender.')
+      throw error
+    }
+  }
 
   const upsertGoogleSource = (patch) => updateHousehold(current => ({ calendarSources: { ...current.calendarSources, google: { ...current.calendarSources.google, ...patch } } }))
   const connectGoogle = async () => {
@@ -2659,15 +2786,15 @@ function CalendarIntegrationPanel({ household, updateHousehold, setImportMessage
     setSyncError('')
     setSyncMessage('')
     try{
-      const token = await requestGoogleCalendarToken({ prompt: googleToken ? '' : 'consent' })
+      const initialToken = await getCalendarToken({ prompt: googleToken ? '' : 'consent' })
+      const { token, rows } = await loadGoogleCalendars(initialToken)
       setGoogleToken(token)
-      const rows = await fetchGoogleCalendars(token)
       setCalendars(rows)
       const saved = normalized.calendarSources.google.selectedCalendarIds
       const initialSelection = saved.length ? saved : rows.filter(calendar => calendar.primary).map(calendar => calendar.id)
       setSelectedCalendarIds(initialSelection.length ? initialSelection : rows.slice(0, 3).map(calendar => calendar.id))
       upsertGoogleSource({ connected: true, calendarNames: Object.fromEntries(rows.map(calendar => [calendar.id, calendar.name])) })
-      setSyncMessage(rows.length ? 'Google Kalender er koblet. Velg kalendere og trykk synkroniser.' : 'Google Kalender er koblet, men ingen lesbare kalendere ble funnet.')
+      setSyncMessage(rows.length ? 'Google Kalender er koblet. Velg kalenderne som inneholder familie- og Spond-aktivitet, og trykk synkroniser.' : 'Google Kalender er koblet, men ingen lesbare kalendere ble funnet.')
     }catch(error){
       setSyncError(error.message || 'Klarte ikke å koble Google Kalender.')
     }finally{
@@ -2680,14 +2807,12 @@ function CalendarIntegrationPanel({ household, updateHousehold, setImportMessage
     setSyncError('')
     setSyncMessage('')
     try{
-      let token = googleToken
-      if(!token){
-        token = await requestGoogleCalendarToken({ prompt: googleSource.connected ? '' : 'consent' })
-        setGoogleToken(token)
-      }
+      let token = await getCalendarToken({ prompt: googleSource.connected ? '' : 'consent' })
       let rows = calendars
       if(!rows.length){
-        rows = await fetchGoogleCalendars(token)
+        const loaded = await loadGoogleCalendars(token)
+        token = loaded.token
+        rows = loaded.rows
         setCalendars(rows)
       }
       const selectedIds = selectedCalendarIds.length ? selectedCalendarIds : (googleSource.selectedCalendarIds.length ? googleSource.selectedCalendarIds : rows.filter(calendar => calendar.primary).map(calendar => calendar.id))
@@ -2713,7 +2838,9 @@ function CalendarIntegrationPanel({ household, updateHousehold, setImportMessage
         }
       })
       const warning = result.errors.length ? ` Noen kalendere feilet: ${result.errors.join(' ')}` : ''
-      setSyncMessage(`${result.events.length} avtaler hentet fra Google for de neste ${daysAhead} dagene.${warning}`)
+      const spondCount = result.events.filter(event => event.source === 'Spond via Google').length
+      const spondPart = spondCount ? ` ${spondCount} av dem er merket som Spond-aktivitet.` : ''
+      setSyncMessage(`${result.events.length} avtaler hentet fra Google for de neste ${daysAhead} dagene.${spondPart}${warning}`)
     }catch(error){
       setSyncError(error.message || 'Klarte ikke å synkronisere Google Kalender.')
     }finally{
@@ -2743,9 +2870,9 @@ function CalendarIntegrationPanel({ household, updateHousehold, setImportMessage
     }
   }
 
-  return <section className="calendarIntegration card"><div><h2>Importer kalender</h2><p>Bruk iCal/ICS-fil for Spond eller andre kalendere. Google-visning vises bare når OAuth client-ID faktisk er satt.</p>{googleSource.lastImportAt && <small>Sist Google-sync: {new Date(googleSource.lastImportAt).toLocaleString('nb-NO')} · {googleSource.lastImportCount} avtaler</small>}</div><div className="integrationTools"><div className="integrationBadges"><span>Spond/iCal: klar</span>{configReady && <span>Google Kalender: klar</span>}</div>{configReady && <div className="calendarConnectBox"><div className="miniActionsWide"><button className="secondary" type="button" onClick={connectGoogle} disabled={syncing}>{googleSource.connected ? 'Koble på nytt' : 'Koble Google'}</button><button className="primary" type="button" onClick={syncGoogle} disabled={syncing}>{syncing ? 'Synker …' : 'Synkroniser'}</button></div>{calendars.length > 0 && <div className="calendarChoices">{calendars.map(calendar => <label key={calendar.id}><input type="checkbox" checked={selectedCalendarIds.includes(calendar.id)} onChange={() => toggleCalendar(calendar.id)}/><span>{calendar.name}</span></label>)}</div>}</div>}<label className="icsImportButton"><input aria-label="Velg .ics-fil" type="file" accept=".ics,text/calendar" onChange={importIcsFile}/><Upload size={16}/>Importer .ics-fil</label>{!configReady && <small>Google Calendar er ikke aktivert i denne lokale kjøringen.</small>}{syncError && <div className="authMsg error">{syncError}</div>}{syncMessage && <div className="authMsg ok">{syncMessage}</div>}</div></section>
+  return <section className="calendarIntegration card"><div><h2>Importer kalender</h2><p>Google Kalender kan hente inn både vanlige avtaler og Spond-aktiviteter som allerede ligger i kalenderen din. iCal/ICS kan fortsatt brukes manuelt.</p>{googleSource.lastImportAt && <small>Sist Google-sync: {new Date(googleSource.lastImportAt).toLocaleString('nb-NO')} · {googleSource.lastImportCount} avtaler</small>}</div><div className="integrationTools"><div className="integrationBadges"><span>Spond via Google: klar</span><span>iCal: klar</span>{googleReady && <span>Google Kalender: {providerTokenReady ? 'via innlogging' : 'klar'}</span>}</div>{googleReady && <div className="calendarConnectBox"><div className="miniActionsWide"><button className="secondary" type="button" onClick={connectGoogle} disabled={syncing}>{googleSource.connected ? 'Koble på nytt' : 'Koble Google'}</button><button className="primary" type="button" onClick={syncGoogle} disabled={syncing}>{syncing ? 'Synker …' : 'Synkroniser'}</button></div>{calendars.length > 0 && <div className="calendarChoices">{calendars.map(calendar => <label key={calendar.id}><input type="checkbox" checked={selectedCalendarIds.includes(calendar.id)} onChange={() => toggleCalendar(calendar.id)}/><span>{calendar.name}</span></label>)}</div>}</div>}<label className="icsImportButton"><input aria-label="Velg .ics-fil" type="file" accept=".ics,text/calendar" onChange={importIcsFile}/><Upload size={16}/>Importer .ics-fil</label>{!googleReady && <small>Logg inn med Google og godkjenn kalenderlesing for å synkronisere direkte. Alternativt kan VITE_GOOGLE_CALENDAR_CLIENT_ID brukes for manuell Google-kobling.</small>}{syncError && <div className="authMsg error">{syncError}</div>}{syncMessage && <div className="authMsg ok">{syncMessage}</div>}</div></section>
 }
-function FamilyCalendarView({ household, updateHousehold, trips, openTrip, setView }){
+function FamilyCalendarView({ household, updateHousehold, trips, openTrip, setView, session }){
   const [formOpen, setFormOpen] = useState(false)
   const [draft, setDraft] = useState({ title: '', date: isoToday(), time: '', person: '', location: '', source: 'Manuell', notes: '' })
   const [importMessage, setImportMessage] = useState('')
@@ -2762,7 +2889,7 @@ function FamilyCalendarView({ household, updateHousehold, trips, openTrip, setVi
     if(row.trip) openTrip(row.trip)
     else if(row.task) setView('tasks')
   }
-  return <section className="screen with-actions"><TopLine title="Kalender" onBack={() => setView('home')}/><div className="content gap-xl"><CalendarIntegrationPanel household={household} updateHousehold={updateHousehold} setImportMessage={setImportMessage}/>{importMessage && <div className="authMsg ok">{importMessage}</div>}<section><div className="dashboardSectionHead"><h2>Avtaler og planer</h2><button className="primary mini" type="button" onClick={() => setFormOpen(true)}><Plus size={16}/>Legg til</button></div>{formOpen && <div className="inlineForm expanded familyCalendarForm"><input value={draft.title} onChange={e => updateDraft({ title: e.target.value })} placeholder="Tittel, f.eks. Trening"/><div className="two"><input type="date" value={draft.date} onChange={e => updateDraft({ date: e.target.value })}/><input type="time" value={draft.time} onChange={e => updateDraft({ time: e.target.value })}/></div><input value={draft.person} onChange={e => updateDraft({ person: e.target.value })} placeholder="Hvem gjelder det?"/><input value={draft.location} onChange={e => updateDraft({ location: e.target.value })} placeholder="Sted"/><select value={draft.source} onChange={e => updateDraft({ source: e.target.value })}><option>Manuell</option><option>Google Kalender</option><option>Spond</option><option>Skole</option></select><textarea value={draft.notes} onChange={e => updateDraft({ notes: e.target.value })} placeholder="Notat"/><div><button type="button" onClick={() => setFormOpen(false)}>Avbryt</button><button type="button" onClick={add}>Lagre avtale</button></div></div>}{agenda.length ? <div className="agendaList">{agenda.map(row => <div className="agendaRow calendarFullRow" key={row.id}><button type="button" onClick={() => openRow(row)}><span>{formatShortDate(row.date)}</span><div><b>{row.title}</b><small>{formatAgendaMeta(row)}{row.note ? ` · ${row.note}` : ''}</small></div><em>{row.kind === 'trip' ? 'Plan' : row.sourceLabel}</em></button>{row.kind === 'calendar' && <button className="rowAction" type="button" onClick={() => remove(row.id)}>Fjern</button>}</div>)}</div> : <Empty title="Ingen avtaler" text="Legg inn første avtale manuelt, importer .ics eller koble Google Kalender." action="Legg til avtale" onAction={() => setFormOpen(true)}/>}</section></div><div className="bottomActions"><button className="primary" type="button" onClick={() => setView('home')}>Til hjem</button></div></section>
+  return <section className="screen with-actions"><TopLine title="Kalender" onBack={() => setView('home')}/><div className="content gap-xl"><CalendarIntegrationPanel household={household} updateHousehold={updateHousehold} setImportMessage={setImportMessage} session={session}/>{importMessage && <div className="authMsg ok">{importMessage}</div>}<section><div className="dashboardSectionHead"><h2>Avtaler og planer</h2><button className="primary mini" type="button" onClick={() => setFormOpen(true)}><Plus size={16}/>Legg til</button></div>{formOpen && <div className="inlineForm expanded familyCalendarForm"><input value={draft.title} onChange={e => updateDraft({ title: e.target.value })} placeholder="Tittel, f.eks. Trening"/><div className="two"><input type="date" value={draft.date} onChange={e => updateDraft({ date: e.target.value })}/><input type="time" value={draft.time} onChange={e => updateDraft({ time: e.target.value })}/></div><input value={draft.person} onChange={e => updateDraft({ person: e.target.value })} placeholder="Hvem gjelder det?"/><input value={draft.location} onChange={e => updateDraft({ location: e.target.value })} placeholder="Sted"/><select value={draft.source} onChange={e => updateDraft({ source: e.target.value })}><option>Manuell</option><option>Google Kalender</option><option>Spond</option><option>Skole</option></select><textarea value={draft.notes} onChange={e => updateDraft({ notes: e.target.value })} placeholder="Notat"/><div><button type="button" onClick={() => setFormOpen(false)}>Avbryt</button><button type="button" onClick={add}>Lagre avtale</button></div></div>}{agenda.length ? <div className="agendaList">{agenda.map(row => <div className="agendaRow calendarFullRow" key={row.id}><button type="button" onClick={() => openRow(row)}><span>{formatShortDate(row.date)}</span><div><b>{row.title}</b><small>{formatAgendaMeta(row)}{row.note ? ` · ${row.note}` : ''}</small></div><em>{row.kind === 'trip' ? 'Plan' : row.sourceLabel}</em></button>{row.kind === 'calendar' && <button className="rowAction" type="button" onClick={() => remove(row.id)}>Fjern</button>}</div>)}</div> : <Empty title="Ingen avtaler" text="Legg inn første avtale manuelt, importer .ics eller koble Google Kalender." action="Legg til avtale" onAction={() => setFormOpen(true)}/>}</section></div><div className="bottomActions"><button className="primary" type="button" onClick={() => setView('home')}>Til hjem</button></div></section>
 }
 
 function TripsView({ older, setOlder, openTrip, setView, trips, loading, error, testMode, showSignOut, onJoinByCode, familyCount }){
