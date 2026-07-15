@@ -315,6 +315,8 @@ body{background:#d8dde4}
 .familyHeaderCard h2{margin:0 0 5px;font-size:24px;color:var(--tv-text)}
 .familyHeaderCard p{margin:0;color:var(--tv-muted);line-height:1.45}
 .familyHeaderCard .primary{flex:none;white-space:nowrap}
+.familySearch{margin:0}
+.familySearch input{min-height:48px;background:#fff}
 .familyGrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px}
 .familyPersonCard{background:#fff;border:1px solid var(--tv-line);border-radius:20px;padding:16px;display:flex;flex-direction:column;gap:12px;box-shadow:0 6px 18px rgb(46 37 27 / 4%)}
 .familyPersonTop{display:flex;gap:12px;align-items:center}
