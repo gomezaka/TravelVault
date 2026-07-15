@@ -4,7 +4,7 @@ import { Bell, CalendarDays, Camera, ChevronLeft, ClipboardList, ExternalLink, F
 import { supabase } from './lib/supabase'
 import { addTripMemberToTrip, createTripDocumentSignedUrl, createTripWithMembers, deleteFamilyMember, deleteTripById, deleteTripDocumentById, fetchDocumentsForTrip, fetchFamilyMembersForUser, fetchMembersForTrip, fetchTripsForUser, fetchUserAppState, inviteFamilyMember, saveFamilyMember, updateTripAppState, updateTripDetails, updateTripDocumentMetadata, updateUserAppState } from './lib/tripRepository'
 import { searchLocations } from './lib/locationSearch'
-import { GOOGLE_CALENDAR_SCOPE, fetchGoogleCalendarEvents, fetchGoogleCalendars, googleCalendarConfig, hasGoogleCalendarConfig, requestGoogleCalendarToken } from './lib/googleCalendar'
+import { GOOGLE_CALENDAR_SCOPE, fetchGoogleCalendarEvents, fetchGoogleCalendars, googleCalendarConfig } from './lib/googleCalendar'
 import { acceptHouseholdInvite, deleteHouseholdMember, fetchHouseholdData, isMissingHouseholdTablesError, saveHouseholdData, subscribeToHouseholdData } from './lib/householdRepository'
 import './styles/app.css'
 
@@ -2741,9 +2741,7 @@ function CalendarIntegrationPanel({ household, updateHousehold, setImportMessage
   const [syncing, setSyncing] = useState(false)
   const [syncError, setSyncError] = useState('')
   const [syncMessage, setSyncMessage] = useState('')
-  const configReady = hasGoogleCalendarConfig()
   const providerTokenReady = Boolean(googleToken || session?.provider_token || readGoogleCalendarProviderToken())
-  const googleReady = providerTokenReady || configReady
   const googleSource = normalized.calendarSources.google
   const daysAhead = googleCalendarConfig().daysAhead
 
@@ -2752,16 +2750,13 @@ function CalendarIntegrationPanel({ household, updateHousehold, setImportMessage
     if(token) setGoogleToken(token)
   }, [session?.provider_token])
 
-  const getCalendarToken = async ({ prompt = 'consent' } = {}) => {
+  const getCalendarToken = () => {
     const existing = googleToken || session?.provider_token || readGoogleCalendarProviderToken()
     if(existing){
       setGoogleToken(existing)
       return existing
     }
-    if(!configReady) throw new Error('Google-innloggingen mangler kalendertilgang. Logg ut og inn med Google igjen, og godkjenn lesetilgang til Google Kalender.')
-    const token = await requestGoogleCalendarToken({ prompt })
-    setGoogleToken(token)
-    return token
+    throw new Error('Google-innloggingen mangler kalender-token. Logg ut og inn med Google igjen, og godkjenn lesetilgang til Google Kalender.')
   }
 
   const loadGoogleCalendars = async (token) => {
@@ -2769,12 +2764,11 @@ function CalendarIntegrationPanel({ household, updateHousehold, setImportMessage
       return { token, rows: await fetchGoogleCalendars(token) }
     }catch(error){
       const authLikeError = /auth|token|scope|permission|forbidden|unauthorized|401|403/i.test(error.message || '')
-      if(configReady && authLikeError){
-        const freshToken = await requestGoogleCalendarToken({ prompt: 'consent' })
-        setGoogleToken(freshToken)
-        return { token: freshToken, rows: await fetchGoogleCalendars(freshToken) }
+      if(authLikeError){
+        clearGoogleCalendarProviderToken()
+        setGoogleToken('')
+        throw new Error('Google-tokenet mangler kalendertilgang eller er utløpt. Logg ut og inn med Google igjen, og godkjenn lesetilgang til Google Kalender.')
       }
-      if(authLikeError) throw new Error('Google-innloggingen mangler kalendertilgang. Logg ut og inn med Google igjen, og godkjenn lesetilgang til Google Kalender.')
       throw error
     }
   }
@@ -2785,7 +2779,7 @@ function CalendarIntegrationPanel({ household, updateHousehold, setImportMessage
     setSyncError('')
     setSyncMessage('')
     try{
-      const initialToken = await getCalendarToken({ prompt: googleToken ? '' : 'consent' })
+      const initialToken = getCalendarToken()
       const { token, rows } = await loadGoogleCalendars(initialToken)
       setGoogleToken(token)
       setCalendars(rows)
@@ -2806,7 +2800,7 @@ function CalendarIntegrationPanel({ household, updateHousehold, setImportMessage
     setSyncError('')
     setSyncMessage('')
     try{
-      let token = await getCalendarToken({ prompt: googleSource.connected ? '' : 'consent' })
+      let token = getCalendarToken()
       let rows = calendars
       if(!rows.length){
         const loaded = await loadGoogleCalendars(token)
@@ -2869,7 +2863,7 @@ function CalendarIntegrationPanel({ household, updateHousehold, setImportMessage
     }
   }
 
-  return <section className="calendarIntegration card"><div><h2>Importer kalender</h2><p>Google Kalender kan hente inn både vanlige avtaler og Spond-aktiviteter som allerede ligger i kalenderen din. iCal/ICS kan fortsatt brukes manuelt.</p>{googleSource.lastImportAt && <small>Sist Google-sync: {new Date(googleSource.lastImportAt).toLocaleString('nb-NO')} · {googleSource.lastImportCount} avtaler</small>}</div><div className="integrationTools"><div className="integrationBadges"><span>Spond via Google: klar</span><span>iCal: klar</span>{googleReady && <span>Google Kalender: {providerTokenReady ? 'via innlogging' : 'klar'}</span>}</div>{googleReady && <div className="calendarConnectBox"><div className="miniActionsWide"><button className="secondary" type="button" onClick={connectGoogle} disabled={syncing}>{googleSource.connected ? 'Koble på nytt' : 'Koble Google'}</button><button className="primary" type="button" onClick={syncGoogle} disabled={syncing}>{syncing ? 'Synker …' : 'Synkroniser'}</button></div>{calendars.length > 0 && <div className="calendarChoices">{calendars.map(calendar => <label key={calendar.id}><input type="checkbox" checked={selectedCalendarIds.includes(calendar.id)} onChange={() => toggleCalendar(calendar.id)}/><span>{calendar.name}</span></label>)}</div>}</div>}<label className="icsImportButton"><input aria-label="Velg .ics-fil" type="file" accept=".ics,text/calendar" onChange={importIcsFile}/><Upload size={16}/>Importer .ics-fil</label>{!googleReady && <small>Logg inn med Google og godkjenn kalenderlesing for å synkronisere direkte. Alternativt kan VITE_GOOGLE_CALENDAR_CLIENT_ID brukes for manuell Google-kobling.</small>}{syncError && <div className="authMsg error">{syncError}</div>}{syncMessage && <div className="authMsg ok">{syncMessage}</div>}</div></section>
+  return <section className="calendarIntegration card"><div><h2>Importer kalender</h2><p>Google Kalender kan hente inn både vanlige avtaler og Spond-aktiviteter som allerede ligger i kalenderen din. iCal/ICS kan fortsatt brukes manuelt.</p>{googleSource.lastImportAt && <small>Sist Google-sync: {new Date(googleSource.lastImportAt).toLocaleString('nb-NO')} · {googleSource.lastImportCount} avtaler</small>}</div><div className="integrationTools"><div className="integrationBadges"><span>Spond via Google: klar</span><span>iCal: klar</span>{providerTokenReady && <span>Google Kalender: via innlogging</span>}</div>{providerTokenReady && <div className="calendarConnectBox"><div className="miniActionsWide"><button className="secondary" type="button" onClick={connectGoogle} disabled={syncing}>{googleSource.connected ? 'Oppdater kalendere' : 'Hent kalendere'}</button><button className="primary" type="button" onClick={syncGoogle} disabled={syncing}>{syncing ? 'Synker …' : 'Synkroniser'}</button></div>{calendars.length > 0 && <div className="calendarChoices">{calendars.map(calendar => <label key={calendar.id}><input type="checkbox" checked={selectedCalendarIds.includes(calendar.id)} onChange={() => toggleCalendar(calendar.id)}/><span>{calendar.name}</span></label>)}</div>}</div>}<label className="icsImportButton"><input aria-label="Velg .ics-fil" type="file" accept=".ics,text/calendar" onChange={importIcsFile}/><Upload size={16}/>Importer .ics-fil</label>{!providerTokenReady && <small>Logg inn med Google og godkjenn kalenderlesing for å synkronisere direkte. Ingen egen Google API-kobling brukes her.</small>}{syncError && <div className="authMsg error">{syncError}</div>}{syncMessage && <div className="authMsg ok">{syncMessage}</div>}</div></section>
 }
 function FamilyCalendarView({ household, updateHousehold, trips, openTrip, setView, session }){
   const [formOpen, setFormOpen] = useState(false)
