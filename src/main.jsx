@@ -2016,7 +2016,7 @@ function AuthGate(){
 }
 
 function MissingSupabaseConfig(){
-  return <div className="page"><main className="phone"><section className="screen authScreen"><div className="authCard"><img src="/logo-mark.png" alt="Travelvault"/><h1>Travelvault</h1><p>Innlogging er ikke riktig konfigurert.</p><div className="authMsg error">Travelvault krever Supabase Auth. Legg inn VITE_SUPABASE_URL og VITE_SUPABASE_ANON_KEY i miljøvariablene for denne deployen.</div><small>Testmodus er bare tilgjengelig lokalt i utvikling når VITE_ENABLE_AUTH=false.</small></div></section></main></div>
+  return <div className="page"><main className="phone"><section className="screen authScreen"><div className="authCard"><img src="/logo-mark.png" alt="Travelvault"/><h1>Travelvault</h1><p>Innlogging er ikke riktig konfigurert.</p><div className="authMsg error">Travelvault krever Supabase Auth. Legg inn VITE_SUPABASE_URL og VITE_SUPABASE_PUBLISHABLE_KEY eller VITE_SUPABASE_ANON_KEY i miljøvariablene.</div><small>Lokalt leses dette fra .env.local i prosjektroten etter restart av Vite. På Netlify må de samme VITE_-variablene ligge i Site environment variables.</small></div></section></main></div>
 }
 
 function PolicyPage({ type }){
@@ -2551,7 +2551,7 @@ function FamilyHome({ trips, family, household, updateHousehold, openTrip, setVi
   const latestMessages = normalized.messages.slice(-2)
   const upcomingTrips = (Array.isArray(trips) ? trips : []).filter(trip => trip.status !== 'Tidligere').slice(0, 3)
 
-  return <section className="screen with-actions familyHomeScreen unifiedHomeScreen">
+  return <section className="screen familyHomeScreen unifiedHomeScreen">
     <header className="appHeader familyHomeTop">
       <div className="brandRow"><img src="/logo-mark.png" alt="Travelvault"/><div><h1>Travelvault</h1><p>Familie, hverdag og reiser samlet</p></div></div>
       {showSignOut && <button className="signOutBtn" onClick={() => supabase.auth.signOut()}>Logg ut</button>}
@@ -2586,7 +2586,6 @@ function FamilyHome({ trips, family, household, updateHousehold, openTrip, setVi
 
       <section><div className="dashboardSectionHead"><h2>Planer og reiser</h2><button className="textButton" type="button" onClick={() => setView('trips')}>Se alle</button></div>{loading && <Empty title="Henter planer" text="Laster familie, turer og brukerdata."/>}{!loading && upcomingTrips.length ? upcomingTrips.map(trip => <TripCard key={trip.id} trip={trip} openTrip={openTrip}/>) : !loading && <Empty title="Ingen turer ennå" text="Opprett første tur, cup eller helgeplan." action="Opprett ny tur" onAction={() => setView('create')}/>}</section>
     </div>
-    <div className="bottomActions familyHomeActions"><button className="primary withIcon" onClick={() => setView('create')}><Plus size={18}/>Opprett ny tur</button><button className="secondary withIcon" type="button" onClick={() => setView('tasks')}><ClipboardList size={18}/>Må ordnes</button></div>
   </section>
 }
 
