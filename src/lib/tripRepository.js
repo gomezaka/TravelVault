@@ -1,7 +1,8 @@
 import { supabase } from './supabase'
 
 function isoToday(){
-  return new Date().toISOString().slice(0, 10)
+  const now = new Date()
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
 }
 
 function statusForTrip(startDate, endDate){
@@ -420,6 +421,25 @@ export async function updateUserAppState(appState = {}){
   if(error && isMissingProfileAppStateColumn(error)) throw new Error('Kjør Supabase-migrasjonen for brukerlagring først.')
   if(error) throw error
   return appState || {}
+}
+
+export async function updateCurrentUserProfile(displayName){
+  if(!supabase) throw new Error('Supabase mangler.')
+  const name = String(displayName || '').trim()
+  if(!name) throw new Error('Skriv inn et navn.')
+
+  const { data: authData, error: authError } = await supabase.auth.updateUser({
+    data: { full_name: name, name }
+  })
+  if(authError) throw authError
+
+  const user = authData?.user
+  if(!user?.id) throw new Error('Supabase-innlogging mangler.')
+  const { error: profileError } = await supabase
+    .from('profiles')
+    .upsert({ id: user.id, display_name: name }, { onConflict: 'id' })
+  if(profileError) throw profileError
+  return user
 }
 
 export async function fetchFamilyMembersForUser(){

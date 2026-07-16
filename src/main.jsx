@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { Bell, CalendarDays, Camera, ChevronLeft, ClipboardList, ExternalLink, FileText, Home, ListChecks, LogOut, Mail, MessageSquare, MoreHorizontal, PiggyBank, Plus, Search, Settings, Trash2, Trophy, Upload, UserCircle, UserPlus, Users, MapPin, Plane, Hotel, Ship, Utensils, RefreshCw, Car, Bus, TrainFront } from 'lucide-react'
 import { supabase } from './lib/supabase'
-import { addTripMemberToTrip, createTripDocumentSignedUrl, createTripWithMembers, deleteFamilyMember, deleteTripById, deleteTripDocumentById, fetchDocumentsForTrip, fetchFamilyMembersForUser, fetchMembersForTrip, fetchTripsForUser, fetchUserAppState, inviteFamilyMember, saveFamilyMember, updateTripAppState, updateTripDetails, updateTripDocumentMetadata, updateUserAppState } from './lib/tripRepository'
+import { addTripMemberToTrip, createTripDocumentSignedUrl, createTripWithMembers, deleteFamilyMember, deleteTripById, deleteTripDocumentById, fetchDocumentsForTrip, fetchFamilyMembersForUser, fetchMembersForTrip, fetchTripsForUser, fetchUserAppState, inviteFamilyMember, saveFamilyMember, updateCurrentUserProfile, updateTripAppState, updateTripDetails, updateTripDocumentMetadata, updateUserAppState } from './lib/tripRepository'
 import { searchLocations } from './lib/locationSearch'
 import { GOOGLE_CALENDAR_SCOPE, fetchGoogleCalendarEvents, fetchGoogleCalendars, googleCalendarConfig } from './lib/googleCalendar'
 import { acceptHouseholdInvite, deleteHouseholdMember, fetchHouseholdData, isMissingHouseholdTablesError, saveHouseholdData, subscribeToHouseholdData } from './lib/householdRepository'
@@ -1452,7 +1452,7 @@ function formatAgendaMeta(row){
   if(row.sourceLabel) bits.push(row.sourceLabel)
   return bits.join(' · ') || 'Uten tidspunkt'
 }
-function buildFamilyAgenda(household, trips = []){
+function buildFamilyAgenda(household, trips = [], { includePast = false } = {}){
   const normalizedHousehold = normalizeHouseholdState(household)
   const today = isoToday()
   const calendarRows = normalizedHousehold.calendarEvents.map(event => ({
@@ -1495,7 +1495,7 @@ function buildFamilyAgenda(household, trips = []){
       trip
     }))
   return [...calendarRows, ...taskRows, ...tripRows]
-    .filter(row => !row.date || row.date >= today)
+    .filter(row => includePast || !row.date || row.date >= today)
     .sort((a, b) => sortableDateTime(a.date, a.time).localeCompare(sortableDateTime(b.date, b.time)))
 }
 
@@ -1708,7 +1708,8 @@ function importFailureMessage(failures = []){
   return `Fant ikke lesbare reisedetaljer i dokumentet. ${details}`.trim()
 }
 function isoToday(){
-  return new Date().toISOString().slice(0, 10)
+  const now = new Date()
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
 }
 function statusForTrip(startDate, endDate){
   const today = isoToday()
@@ -1929,9 +1930,10 @@ function AuthGate(){
   useEffect(() => {
     async function ensureProfile(){
       if(!supabase || !session?.user) return
+      const metadata = session.user.user_metadata || {}
       await supabase.from('profiles').upsert({
         id: session.user.id,
-        display_name: session.user.email?.split('@')[0] || 'Travelvault-bruker'
+        display_name: metadata.full_name || metadata.name || session.user.email?.split('@')[0] || 'Travelvault-bruker'
       }, { onConflict: 'id' })
     }
     ensureProfile()
@@ -2609,11 +2611,44 @@ function FamilyBottomNav({ view, setView }){
 function ProfileView({ session, family, householdStorage, setView, supabaseMode }){
   const user = session?.user || {}
   const metadata = user.user_metadata || {}
-  const displayName = metadata.full_name || metadata.name || user.email?.split('@')[0] || 'Travelvault-bruker'
+  const profileName = metadata.full_name || metadata.name || user.email?.split('@')[0] || 'Travelvault-bruker'
+  const [displayName, setDisplayName] = useState(profileName)
+  const [nameDraft, setNameDraft] = useState(profileName)
+  const [editingName, setEditingName] = useState(false)
+  const [savingName, setSavingName] = useState(false)
+  const [profileMessage, setProfileMessage] = useState('')
+  const [profileError, setProfileError] = useState('')
   const avatarUrl = metadata.avatar_url || metadata.picture || ''
   const usesGoogle = user.app_metadata?.provider === 'google' || user.identities?.some(identity => identity.provider === 'google')
   const loginMethod = supabaseMode ? (usesGoogle ? 'Google' : 'E-postlenke') : 'Lokal testmodus'
   const initials = displayName.split(/\s+/).filter(Boolean).slice(0, 2).map(part => part[0]).join('').toUpperCase() || 'TV'
+
+  useEffect(() => {
+    setDisplayName(profileName)
+    setNameDraft(profileName)
+  }, [profileName])
+
+  const saveName = async () => {
+    const nextName = nameDraft.trim()
+    if(!nextName){
+      setProfileError('Skriv inn et navn.')
+      return
+    }
+    setSavingName(true)
+    setProfileError('')
+    setProfileMessage('')
+    try{
+      await updateCurrentUserProfile(nextName)
+      setDisplayName(nextName)
+      setNameDraft(nextName)
+      setEditingName(false)
+      setProfileMessage('Profilnavnet er oppdatert.')
+    }catch(error){
+      setProfileError(error.message || 'Klarte ikke å oppdatere profilnavnet.')
+    }finally{
+      setSavingName(false)
+    }
+  }
 
   return <section className="screen with-actions profileScreen">
     <TopLine title="Profil" onBack={() => setView('home')}/>
@@ -2633,7 +2668,11 @@ function ProfileView({ session, family, householdStorage, setView, supabaseMode 
         </div>
       </section>
 
+      {profileMessage && <div className="authMsg ok">{profileMessage}</div>}
+      {profileError && <div className="authMsg error">{profileError}</div>}
+      {editingName && <section className="inlineForm profileEditForm"><label className="field"><span>Visningsnavn</span><input value={nameDraft} onChange={event => setNameDraft(event.target.value)} autoComplete="name"/></label><div><button type="button" onClick={() => { setEditingName(false); setNameDraft(displayName) }} disabled={savingName}>Avbryt</button><button type="button" onClick={saveName} disabled={savingName || !nameDraft.trim()}>{savingName ? 'Lagrer …' : 'Lagre navn'}</button></div></section>}
       <section className="profileActionList card">
+        {supabaseMode && <button type="button" onClick={() => { setEditingName(true); setProfileMessage(''); setProfileError('') }}><UserCircle size={18}/><span>Rediger profilnavn</span></button>}
         <button type="button" onClick={() => setView('family')}><Users size={18}/><span>Min familie</span></button>
         <button type="button" onClick={() => setView('calendar')}><CalendarDays size={18}/><span>Kalender og Spond via Google</span></button>
         <button type="button" onClick={() => setView('trips')}><Plane size={18}/><span>Planer og reiser</span></button>
@@ -2664,7 +2703,7 @@ function HomeTasksPreview({ household, updateHousehold, setView }){
     setDraft('')
   }
   const toggle = (id) => updateHousehold(current => ({ tasks: current.tasks.map(task => task.id === id ? { ...task, done: !task.done, updatedAt: new Date().toISOString() } : task) }))
-  return <section className="dashboardPanel compactPanel"><div className="dashboardSectionHead"><h2>Må ordnes</h2><button className="textButton" type="button" onClick={() => setView('tasks')}>Åpne</button></div><div className="miniComposer"><input value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if(e.key === 'Enter'){ e.preventDefault(); add() } }} placeholder="Legg til oppgave"/><button type="button" onClick={add}>Legg til</button></div>{openTasks.slice(0, 4).map(task => <div className="familyMiniRow" key={task.id}><button className={`checkButton ${task.done ? 'checked' : ''}`} type="button" onClick={() => toggle(task.id)}>{task.done ? '✓' : ''}</button><span>{task.title}</span>{task.dueDate && <small>{formatShortDate(task.dueDate)}</small>}</div>)}{!openTasks.length && <p className="softText">Ingen åpne oppgaver.</p>}</section>
+  return <section className="dashboardPanel compactPanel"><div className="dashboardSectionHead"><h2>Må ordnes</h2><button className="textButton" type="button" onClick={() => setView('tasks')}>Åpne</button></div><div className="miniComposer"><input value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if(e.key === 'Enter'){ e.preventDefault(); add() } }} placeholder="Legg til oppgave"/><button type="button" onClick={add} disabled={!draft.trim()}>Legg til</button></div>{openTasks.slice(0, 4).map(task => <div className="familyMiniRow" key={task.id}><button className={`checkButton ${task.done ? 'checked' : ''}`} type="button" aria-label={`${task.done ? 'Åpne' : 'Fullfør'} oppgave: ${task.title}`} onClick={() => toggle(task.id)}>{task.done ? '✓' : ''}</button><span>{task.title}</span>{task.dueDate && <small>{formatShortDate(task.dueDate)}</small>}</div>)}{!openTasks.length && <p className="softText">Ingen åpne oppgaver.</p>}</section>
 }
 function HomeShoppingPreview({ household, updateHousehold, setView }){
   const [draft, setDraft] = useState('')
@@ -2677,7 +2716,7 @@ function HomeShoppingPreview({ household, updateHousehold, setView }){
     setDraft('')
   }
   const toggle = (id) => updateHousehold(current => ({ shopping: current.shopping.map(item => item.id === id ? { ...item, checked: !item.checked, updatedAt: new Date().toISOString() } : item) }))
-  return <section className="dashboardPanel compactPanel"><div className="dashboardSectionHead"><h2>Handleliste</h2><button className="textButton" type="button" onClick={() => setView('shopping')}>Åpne</button></div><div className="miniComposer"><input value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if(e.key === 'Enter'){ e.preventDefault(); add() } }} placeholder="Legg til vare"/><button type="button" onClick={add}>Legg til</button></div>{openItems.slice(0, 4).map(item => <div className="familyMiniRow" key={item.id}><button className={`checkButton ${item.checked ? 'checked' : ''}`} type="button" onClick={() => toggle(item.id)}>{item.checked ? '✓' : ''}</button><span>{item.title}</span></div>)}{!openItems.length && <p className="softText">Handlelisten er tom.</p>}</section>
+  return <section className="dashboardPanel compactPanel"><div className="dashboardSectionHead"><h2>Handleliste</h2><button className="textButton" type="button" onClick={() => setView('shopping')}>Åpne</button></div><div className="miniComposer"><input value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if(e.key === 'Enter'){ e.preventDefault(); add() } }} placeholder="Legg til vare"/><button type="button" onClick={add} disabled={!draft.trim()}>Legg til</button></div>{openItems.slice(0, 4).map(item => <div className="familyMiniRow" key={item.id}><button className={`checkButton ${item.checked ? 'checked' : ''}`} type="button" aria-label={`${item.checked ? 'Marker som mangler' : 'Marker som kjøpt'}: ${item.title}`} onClick={() => toggle(item.id)}>{item.checked ? '✓' : ''}</button><span>{item.title}</span></div>)}{!openItems.length && <p className="softText">Handlelisten er tom.</p>}</section>
 }
 function HomeChatPreview({ household, updateHousehold, setView }){
   const [draft, setDraft] = useState('')
@@ -2703,7 +2742,7 @@ function ShoppingListView({ household, updateHousehold, setView }){
   }
   const toggle = (id) => updateHousehold(current => ({ shopping: current.shopping.map(item => item.id === id ? { ...item, checked: !item.checked, updatedAt: new Date().toISOString() } : item) }))
   const remove = (id) => updateHousehold(current => ({ shopping: current.shopping.filter(item => item.id !== id) }))
-  return <section className="screen"><TopLine title="Handleliste" onBack={() => setView('home')}/><div className="content gap-xl"><section className="familyHeaderCard card"><div><h2>Felles handleliste</h2><p>Alle i familien deler samme liste. Pakkelistens «må kjøpes» kan nå sendes hit fra en tur.</p></div></section><div className="keepComposer card"><input value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if(e.key === 'Enter'){ e.preventDefault(); add() } }} placeholder="Skriv f.eks. melk, brød, solkrem …"/><button className="primary" type="button" onClick={add}>Legg til</button></div><div className="chips">{['Alle', 'Mangler', 'Kjøpt'].map(item => <button className={filter === item ? 'active' : ''} onClick={() => setFilter(item)} key={item}>{item}</button>)}</div>{rows.length ? rows.map(item => <div className="householdListRow" key={item.id}><button className={`checkButton ${item.checked ? 'checked' : ''}`} type="button" onClick={() => toggle(item.id)}>{item.checked ? '✓' : ''}</button><div><b className={item.checked ? 'done' : ''}>{item.title}</b><small>{[item.source === 'trip' ? 'Fra tur/pakkeliste' : 'Familieliste', item.note].filter(Boolean).join(' · ')}</small></div><button className="rowAction" type="button" onClick={() => remove(item.id)}>Fjern</button></div>) : <Empty title="Ingen varer" text="Legg til det familien må handle."/>}</div></section>
+  return <section className="screen"><TopLine title="Handleliste" onBack={() => setView('home')}/><div className="content gap-xl"><section className="familyHeaderCard card"><div><h2>Felles handleliste</h2><p>Alle i familien deler samme liste. Pakkelistens «må kjøpes» kan nå sendes hit fra en tur.</p></div></section><div className="keepComposer card"><input value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if(e.key === 'Enter'){ e.preventDefault(); add() } }} placeholder="Skriv f.eks. melk, brød, solkrem …"/><button className="primary" type="button" onClick={add} disabled={!draft.trim()}>Legg til</button></div><div className="chips">{['Alle', 'Mangler', 'Kjøpt'].map(item => <button className={filter === item ? 'active' : ''} type="button" onClick={() => setFilter(item)} key={item}>{item}</button>)}</div>{rows.length ? rows.map(item => <div className="householdListRow" key={item.id}><button className={`checkButton ${item.checked ? 'checked' : ''}`} type="button" aria-label={`${item.checked ? 'Marker som mangler' : 'Marker som kjøpt'}: ${item.title}`} onClick={() => toggle(item.id)}>{item.checked ? '✓' : ''}</button><div><b className={item.checked ? 'done' : ''}>{item.title}</b><small>{[item.source === 'trip' ? 'Fra tur/pakkeliste' : 'Familieliste', item.note].filter(Boolean).join(' · ')}</small></div><button className="rowAction" type="button" onClick={() => remove(item.id)}>Fjern</button></div>) : <Empty title="Ingen varer" text="Legg til det familien må handle."/>}</div></section>
 }
 function HouseholdTasksView({ household, updateHousehold, family, setView }){
   const [filter, setFilter] = useState('Åpne')
@@ -2721,7 +2760,7 @@ function HouseholdTasksView({ household, updateHousehold, family, setView }){
   }
   const toggle = (id) => updateHousehold(current => ({ tasks: current.tasks.map(task => task.id === id ? { ...task, done: !task.done, updatedAt: new Date().toISOString() } : task) }))
   const remove = (id) => updateHousehold(current => ({ tasks: current.tasks.filter(task => task.id !== id) }))
-  return <section className="screen"><TopLine title="Må ordnes" onBack={() => setView('home')}/><div className="content gap-xl"><section className="familyHeaderCard card"><div><h2>Familiens oppgaver</h2><p>Ting som må huskes, bestilles, betales eller avklares. Oppgaver med frist vises også i familiehjemmet og kalenderoversikten.</p></div></section><div className="inlineForm expanded taskForm"><input value={draft.title} onChange={e => updateDraft({ title: e.target.value })} onKeyDown={e => { if(e.key === 'Enter'){ e.preventDefault(); add() } }} placeholder="Hva må ordnes?"/><div className="two"><input type="date" value={draft.dueDate} onChange={e => updateDraft({ dueDate: e.target.value })}/><select value={draft.priority} onChange={e => updateDraft({ priority: e.target.value })}><option value="normal">Normal</option><option value="high">Viktig</option><option value="low">Lav</option></select></div><input value={draft.person} onChange={e => updateDraft({ person: e.target.value })} placeholder={family.length ? 'Hvem? F.eks. Ola' : 'Hvem gjelder det?'}/><textarea value={draft.notes} onChange={e => updateDraft({ notes: e.target.value })} placeholder="Notat"/><div><button type="button" onClick={() => setDraft({ title: '', dueDate: '', person: '', priority: 'normal', notes: '' })}>Tøm</button><button type="button" onClick={add}>Legg til oppgave</button></div></div><div className="chips">{['Åpne', 'Ferdig', 'Alle'].map(item => <button className={filter === item ? 'active' : ''} onClick={() => setFilter(item)} key={item}>{item}</button>)}</div>{rows.length ? rows.map(task => <div className="householdListRow taskListRow" key={task.id}><button className={`checkButton ${task.done ? 'checked' : ''}`} type="button" onClick={() => toggle(task.id)}>{task.done ? '✓' : ''}</button><div><b className={task.done ? 'done' : ''}>{task.title}</b><small>{[task.dueDate ? formatShortDate(task.dueDate) : '', task.person, task.priority === 'high' ? 'Viktig' : '', task.notes].filter(Boolean).join(' · ') || 'Ingen frist'}</small></div><button className="rowAction" type="button" onClick={() => remove(task.id)}>Fjern</button></div>) : <Empty title="Ingen oppgaver" text="Legg til noe familien må ordne."/>}</div></section>
+  return <section className="screen"><TopLine title="Må ordnes" onBack={() => setView('home')}/><div className="content gap-xl"><section className="familyHeaderCard card"><div><h2>Familiens oppgaver</h2><p>Ting som må huskes, bestilles, betales eller avklares. Oppgaver med frist vises også i familiehjemmet og kalenderoversikten.</p></div></section><div className="inlineForm expanded taskForm"><input value={draft.title} onChange={e => updateDraft({ title: e.target.value })} onKeyDown={e => { if(e.key === 'Enter'){ e.preventDefault(); add() } }} placeholder="Hva må ordnes?"/><div className="two"><input type="date" value={draft.dueDate} onChange={e => updateDraft({ dueDate: e.target.value })}/><select value={draft.priority} onChange={e => updateDraft({ priority: e.target.value })}><option value="normal">Normal</option><option value="high">Viktig</option><option value="low">Lav</option></select></div><input value={draft.person} onChange={e => updateDraft({ person: e.target.value })} placeholder={family.length ? 'Hvem? F.eks. Ola' : 'Hvem gjelder det?'}/><textarea value={draft.notes} onChange={e => updateDraft({ notes: e.target.value })} placeholder="Notat"/><div><button type="button" onClick={() => setDraft({ title: '', dueDate: '', person: '', priority: 'normal', notes: '' })}>Tøm</button><button type="button" onClick={add} disabled={!draft.title.trim()}>Legg til oppgave</button></div></div><div className="chips">{['Åpne', 'Ferdig', 'Alle'].map(item => <button className={filter === item ? 'active' : ''} type="button" onClick={() => setFilter(item)} key={item}>{item}</button>)}</div>{rows.length ? rows.map(task => <div className="householdListRow taskListRow" key={task.id}><button className={`checkButton ${task.done ? 'checked' : ''}`} type="button" aria-label={`${task.done ? 'Åpne' : 'Fullfør'} oppgave: ${task.title}`} onClick={() => toggle(task.id)}>{task.done ? '✓' : ''}</button><div><b className={task.done ? 'done' : ''}>{task.title}</b><small>{[task.dueDate ? formatShortDate(task.dueDate) : '', task.person, task.priority === 'high' ? 'Viktig' : '', task.notes].filter(Boolean).join(' · ') || 'Ingen frist'}</small></div><button className="rowAction" type="button" onClick={() => remove(task.id)}>Fjern</button></div>) : <Empty title="Ingen oppgaver" text="Legg til noe familien må ordne."/>}</div></section>
 }
 function FamilyChatView({ household, updateHousehold, family, trips = [], setView }){
   const [draft, setDraft] = useState('')
@@ -2739,7 +2778,7 @@ function FamilyChatView({ household, updateHousehold, family, trips = [], setVie
   }
   return <section className="screen with-actions"><TopLine title="Chat" onBack={() => setView('home')}/><div className="content gap-xl"><section className="familyHeaderCard card"><div><h2>Felles chat</h2><p>Beskjeder til hele familien, med egne tråder for kommende avtaler og planer.</p></div></section><div className="chips chatThreadChips">{threads.map(thread => <button className={threadId === thread.id ? 'active' : ''} type="button" onClick={() => setThreadId(thread.id)} key={thread.id}>{thread.title}</button>)}</div><div className="chatScreen"><div className="chatMessages">{visibleMessages.length ? visibleMessages.map(message => <div className={`chatBubble ${message.author === 'Du' ? 'mine' : ''}`} key={message.id}><b>{message.author}</b><p>{message.text}</p><small>{new Date(message.createdAt).toLocaleString('nb-NO', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</small></div>) : <Empty title="Ingen meldinger ennå" text={activeThread.id === 'family' ? (family.length ? `Start samtalen med ${family.length} familiemedlemmer.` : 'Legg til familien, eller skriv første beskjed her.') : `Start tråden for ${activeThread.title}.`}/>}</div><div className="chatComposer"><small>{activeThread.title}</small><textarea value={draft} onChange={e => setDraft(e.target.value)} placeholder="Skriv melding til familien"></textarea><button type="button" className="primary" onClick={send}>Send melding</button></div></div></div></section>
 }
-function CalendarIntegrationPanel({ household, updateHousehold, setImportMessage, session }){
+function CalendarIntegrationPanel({ household, updateHousehold, setImportMessage, onImportedEvents, session }){
   const normalized = normalizeHouseholdState(household)
   const [googleToken, setGoogleToken] = useState(() => session?.provider_token || readGoogleCalendarProviderToken())
   const [calendars, setCalendars] = useState([])
@@ -2862,6 +2901,7 @@ function CalendarIntegrationPanel({ household, updateHousehold, setImportMessage
       const fresh = parsed.filter(row => !existingKeys.has(row.sourceKey || `${row.source}-${row.title}-${row.date}-${row.time}`))
       updateHousehold({ calendarEvents: [...current.calendarEvents, ...fresh] })
       setImportMessage(`${fresh.length} av ${parsed.length} avtaler importert fra ${file.name}.`)
+      if(fresh.length) onImportedEvents?.(fresh)
     }catch(error){
       setImportMessage(error.message || 'Klarte ikke å lese iCal-filen.')
     }finally{
@@ -2875,11 +2915,15 @@ function FamilyCalendarView({ household, updateHousehold, trips, openTrip, setVi
   const [formOpen, setFormOpen] = useState(false)
   const [draft, setDraft] = useState({ title: '', date: isoToday(), time: '', person: '', location: '', source: 'Manuell', notes: '' })
   const [importMessage, setImportMessage] = useState('')
-  const agenda = buildFamilyAgenda(household, trips)
+  const [filter, setFilter] = useState('Kommende')
+  const today = isoToday()
+  const fullAgenda = buildFamilyAgenda(household, trips, { includePast: true })
+  const agenda = fullAgenda.filter(row => filter === 'Alle' || (filter === 'Tidligere' ? row.date && row.date < today : !row.date || row.date >= today))
   const updateDraft = patch => setDraft(current => ({ ...current, ...patch }))
   const add = () => {
     if(!draft.title.trim()) return
     updateHousehold(current => ({ calendarEvents: [...current.calendarEvents, { ...draft, id: createClientId('family-event'), title: draft.title.trim(), sourceType: 'manual', createdAt: new Date().toISOString() }] }))
+    setFilter(draft.date && draft.date < today ? 'Tidligere' : 'Kommende')
     setDraft({ title: '', date: isoToday(), time: '', person: '', location: '', source: 'Manuell', notes: '' })
     setFormOpen(false)
   }
@@ -2888,7 +2932,7 @@ function FamilyCalendarView({ household, updateHousehold, trips, openTrip, setVi
     if(row.trip) openTrip(row.trip)
     else if(row.task) setView('tasks')
   }
-  return <section className="screen"><TopLine title="Kalender" onBack={() => setView('home')}/><div className="content gap-xl"><CalendarIntegrationPanel household={household} updateHousehold={updateHousehold} setImportMessage={setImportMessage} session={session}/>{importMessage && <div className="authMsg ok">{importMessage}</div>}<section><div className="dashboardSectionHead"><h2>Avtaler og planer</h2><button className="primary mini" type="button" onClick={() => setFormOpen(true)}><Plus size={16}/>Legg til</button></div>{formOpen && <div className="inlineForm expanded familyCalendarForm"><input value={draft.title} onChange={e => updateDraft({ title: e.target.value })} placeholder="Tittel, f.eks. Trening"/><div className="two"><input type="date" value={draft.date} onChange={e => updateDraft({ date: e.target.value })}/><input type="time" value={draft.time} onChange={e => updateDraft({ time: e.target.value })}/></div><input value={draft.person} onChange={e => updateDraft({ person: e.target.value })} placeholder="Hvem gjelder det?"/><input value={draft.location} onChange={e => updateDraft({ location: e.target.value })} placeholder="Sted"/><select value={draft.source} onChange={e => updateDraft({ source: e.target.value })}><option>Manuell</option><option>Google Kalender</option><option>Spond</option><option>Skole</option></select><textarea value={draft.notes} onChange={e => updateDraft({ notes: e.target.value })} placeholder="Notat"/><div><button type="button" onClick={() => setFormOpen(false)}>Avbryt</button><button type="button" onClick={add}>Lagre avtale</button></div></div>}{agenda.length ? <div className="agendaList">{agenda.map(row => <div className="agendaRow calendarFullRow" key={row.id}><button type="button" onClick={() => openRow(row)}><span>{formatShortDate(row.date)}</span><div><b>{row.title}</b><small>{formatAgendaMeta(row)}{row.note ? ` · ${row.note}` : ''}</small></div><em>{row.kind === 'trip' ? 'Plan' : row.sourceLabel}</em></button>{row.kind === 'calendar' && <button className="rowAction" type="button" onClick={() => remove(row.id)}>Fjern</button>}</div>)}</div> : <Empty title="Ingen avtaler" text="Legg inn første avtale manuelt, importer .ics eller koble Google Kalender." action="Legg til avtale" onAction={() => setFormOpen(true)}/>}</section></div></section>
+  return <section className="screen"><TopLine title="Kalender" onBack={() => setView('home')}/><div className="content gap-xl"><CalendarIntegrationPanel household={household} updateHousehold={updateHousehold} setImportMessage={setImportMessage} onImportedEvents={rows => setFilter(rows.some(row => row.date && row.date >= today) ? 'Kommende' : 'Tidligere')} session={session}/>{importMessage && <div className="authMsg ok">{importMessage}</div>}<section><div className="dashboardSectionHead"><h2>Avtaler og planer</h2><button className="primary mini" type="button" onClick={() => setFormOpen(true)}><Plus size={16}/>Legg til</button></div>{formOpen && <div className="inlineForm expanded familyCalendarForm"><input value={draft.title} onChange={e => updateDraft({ title: e.target.value })} placeholder="Tittel, f.eks. Trening"/><div className="two"><input type="date" value={draft.date} onChange={e => updateDraft({ date: e.target.value })}/><input type="time" value={draft.time} onChange={e => updateDraft({ time: e.target.value })}/></div><input value={draft.person} onChange={e => updateDraft({ person: e.target.value })} placeholder="Hvem gjelder det?"/><input value={draft.location} onChange={e => updateDraft({ location: e.target.value })} placeholder="Sted"/><select value={draft.source} onChange={e => updateDraft({ source: e.target.value })}><option>Manuell</option><option>Skole</option><option>Annet</option></select><textarea value={draft.notes} onChange={e => updateDraft({ notes: e.target.value })} placeholder="Notat"/><div><button type="button" onClick={() => setFormOpen(false)}>Avbryt</button><button type="button" onClick={add} disabled={!draft.title.trim()}>Lagre avtale</button></div></div>}<div className="chips calendarFilters" aria-label="Filtrer kalender">{['Kommende', 'Tidligere', 'Alle'].map(item => <button className={filter === item ? 'active' : ''} type="button" onClick={() => setFilter(item)} key={item}>{item}</button>)}</div>{agenda.length ? <div className="agendaList">{agenda.map(row => <div className="agendaRow calendarFullRow" key={row.id}><button type="button" onClick={() => openRow(row)}><span>{formatShortDate(row.date)}</span><div><b>{row.title}</b><small>{formatAgendaMeta(row)}{row.note ? ` · ${row.note}` : ''}</small></div><em>{row.kind === 'trip' ? 'Plan' : row.sourceLabel}</em></button>{row.kind === 'calendar' && <button className="rowAction" type="button" onClick={() => remove(row.id)}>Fjern</button>}</div>)}</div> : <Empty title={filter === 'Tidligere' ? 'Ingen tidligere avtaler' : 'Ingen kommende avtaler'} text={filter === 'Tidligere' ? 'Tidligere kalenderavtaler vises her når de finnes.' : 'Legg inn første avtale manuelt, importer .ics eller synkroniser Google Kalender.'} action={filter === 'Tidligere' ? undefined : 'Legg til avtale'} onAction={filter === 'Tidligere' ? undefined : () => setFormOpen(true)}/>}</section></div></section>
 }
 
 function TripsView({ older, setOlder, openTrip, setView, trips, loading, error, testMode, showSignOut, onJoinByCode, familyCount }){
@@ -2921,7 +2965,7 @@ function TripsView({ older, setOlder, openTrip, setView, trips, loading, error, 
     {!!ongoing.length && <TripSection title="Pågående" trips={ongoing} openTrip={openTrip}/>} 
     {!!upcoming.length && <TripSection title="Kommende" trips={upcoming} openTrip={openTrip}/>} 
     {!!previous.length && <div><button className="sectionToggle" onClick={() => setOlder(!older)}><span>Tidligere turer</span><b>{older ? 'Skjul' : 'Vis'}</b></button>{older && previous.map(trip => <TripCard key={trip.id} trip={trip} muted openTrip={openTrip}/>)}</div>}
-  </div><div className="bottomActions"><button className="primary withIcon" onClick={() => setView('create')}><Plus size={18}/>Opprett ny tur</button><button className="secondary withIcon" type="button" onClick={() => setView('family')}><Users size={18}/>Min familie{familyCount ? ` (${familyCount})` : ''}</button><button className="secondary withIcon" type="button" onClick={() => setJoining(true)}><UserPlus size={18}/>Bli med via invitasjonskode</button></div></section>
+  </div><div className="bottomActions"><button className="primary withIcon" onClick={() => setView('create')}><Plus size={18}/>Opprett ny tur</button><button className="secondary withIcon" type="button" onClick={() => setView('family')}><Users size={18}/>Min familie{familyCount ? ` (${familyCount})` : ''}</button>{testMode && <button className="secondary withIcon" type="button" onClick={() => setJoining(true)}><UserPlus size={18}/>Bli med via invitasjonskode</button>}</div></section>
 }
 
 function TripSection({ title, trips, openTrip }){
@@ -3343,7 +3387,7 @@ function TripShell(props){
       label: '',
       rows: [
         ['dokumenter', FileText, 'Dokumenter'],
-        ['bilder', Camera, 'Bilder'],
+        ...(!props.supabaseMode ? [['bilder', Camera, 'Bilder']] : []),
         ['deltakere', Users, 'Deltakere'],
         ...(tripFeatures(trip).matches ? [['kamper', Trophy, 'Kamper']] : []),
         ['innstillinger', Settings, 'Innstillinger']
@@ -3745,7 +3789,7 @@ function PackingView({ members, packing, setPacking, tripType = 'default', custo
 
 function PackRow({ item, packing, setPacking, subtitle = '' }){
   const update = patch => setPacking(packing.map(row => row.id === item.id ? { ...row, ...patch } : row))
-  return <div className="packRow"><button className={`checkButton ${item.packed ? 'checked' : ''}`} onClick={() => update({ packed: !item.packed })} type="button">{item.packed ? '✓' : ''}</button><div><b className={item.packed ? 'done' : ''}>{item.title}</b><small>{subtitle || item.category}</small></div>{item.mustBuy && <em>Må kjøpes</em>}<button className="rowAction" onClick={() => update({ mustBuy: !item.mustBuy })} type="button">{item.mustBuy ? 'Ikke kjøp' : 'Må kjøpes'}</button><button className="rowAction" onClick={() => setPacking(packing.filter(row => row.id !== item.id))} type="button">Fjern</button></div>
+  return <div className="packRow"><button className={`checkButton ${item.packed ? 'checked' : ''}`} onClick={() => update({ packed: !item.packed })} type="button" aria-label={`${item.packed ? 'Marker som ikke pakket' : 'Marker som pakket'}: ${item.title}`}>{item.packed ? '✓' : ''}</button><div><b className={item.packed ? 'done' : ''}>{item.title}</b><small>{subtitle || item.category}</small></div>{item.mustBuy && <em>Må kjøpes</em>}<button className="rowAction" onClick={() => update({ mustBuy: !item.mustBuy })} type="button">{item.mustBuy ? 'Ikke kjøp' : 'Må kjøpes'}</button><button className="rowAction" onClick={() => setPacking(packing.filter(row => row.id !== item.id))} type="button">Fjern</button></div>
 }
 
 function ExpensesView({ members, expenses, setExpenses }){
@@ -3829,9 +3873,9 @@ function SettlementView({ members, expenses, back }){
 }
 
 function MoreView(props){
-  const { mer, setMer, trip } = props
+  const { mer, setMer, trip, supabaseMode } = props
   if(mer === 'list'){
-    const rows = [['chat', MessageSquare, 'Chat'], ['dokumenter', FileText, 'Dokumenter'], ['bilder', Camera, 'Bilder'], ['deltakere', Users, 'Deltakere'], ...(tripFeatures(trip).matches ? [['kamper', Trophy, 'Kamper']] : []), ['innstillinger', Settings, 'Innstillinger']]
+    const rows = [['chat', MessageSquare, 'Chat'], ['dokumenter', FileText, 'Dokumenter'], ...(!supabaseMode ? [['bilder', Camera, 'Bilder']] : []), ['deltakere', Users, 'Deltakere'], ...(tripFeatures(trip).matches ? [['kamper', Trophy, 'Kamper']] : []), ['innstillinger', Settings, 'Innstillinger']]
     return <div className="moreList">{rows.map(([id, Icon, label]) => <button key={id} onClick={() => setMer(id)}><AppNavIcon id={id} className="moreNavIcon"/><span>{label}</span><b>›</b></button>)}</div>
   }
   return <SubScreen {...props}/>
@@ -3968,7 +4012,7 @@ function SettingsScreen({ trip, deleteTrip, setView }){
       setWorking(false)
     }
   }
-  return <><h2>Innstillinger</h2><div className="card info"><p><b>Turnavn</b><span>{trip.title}</span></p><p><b>Turtype</b><span>{tripTypeLabel(trip.type)}</span></p>{location && <p><b>Hovedsted</b><span>{location}</span></p>}<p><b>Invitasjonskode</b><span>{trip.inviteCode || 'Ikke laget'}</span></p><p><b>Lagring</b><span>{trip.source === 'local' ? 'Lokal testmodus' : 'Supabase'}</span></p><p><b>Din rolle</b><span>Eier</span></p></div>{error && <div className="authMsg error">{error}</div>}<div className="settingsActions"><button className="primary" type="button" onClick={() => setView('editTrip')}>Rediger tur</button>{!confirming && <button className="dangerButton" type="button" onClick={() => setConfirming(true)}>Slett tur</button>}</div>{confirming && <div className="deleteConfirm card"><h3>Slette turen?</h3><p>Dette fjerner turen fra Travelvault. Innhold som deltakere, planpunkter, dokumenter og bilder knyttet til turen fjernes også.</p><div><button className="secondary" type="button" onClick={() => setConfirming(false)} disabled={working}>Avbryt</button><button className="dangerButton" type="button" onClick={remove} disabled={working}>{working ? 'Sletter …' : 'Slett tur'}</button></div></div>}</>
+  return <><h2>Innstillinger</h2><div className="card info"><p><b>Turnavn</b><span>{trip.title}</span></p><p><b>Turtype</b><span>{tripTypeLabel(trip.type)}</span></p>{location && <p><b>Hovedsted</b><span>{location}</span></p>}{trip.inviteCode && <p><b>Invitasjonskode</b><span>{trip.inviteCode}</span></p>}<p><b>Lagring</b><span>{trip.source === 'local' ? 'Lokal testmodus' : 'Supabase'}</span></p><p><b>Din rolle</b><span>Eier</span></p></div>{error && <div className="authMsg error">{error}</div>}<div className="settingsActions"><button className="primary" type="button" onClick={() => setView('editTrip')}>Rediger tur</button>{!confirming && <button className="dangerButton" type="button" onClick={() => setConfirming(true)}>Slett tur</button>}</div>{confirming && <div className="deleteConfirm card"><h3>Slette turen?</h3><p>Dette fjerner turen fra Travelvault. Innhold som deltakere, planpunkter, dokumenter og bilder knyttet til turen fjernes også.</p><div><button className="secondary" type="button" onClick={() => setConfirming(false)} disabled={working}>Avbryt</button><button className="dangerButton" type="button" onClick={remove} disabled={working}>{working ? 'Sletter …' : 'Slett tur'}</button></div></div>}</>
 }
 
 function DocumentInsightPanel({ documents }){

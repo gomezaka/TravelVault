@@ -1,9 +1,5 @@
-const GIS_SRC = 'https://accounts.google.com/gsi/client'
 const CALENDAR_API_BASE = 'https://www.googleapis.com/calendar/v3'
 export const GOOGLE_CALENDAR_SCOPE = 'https://www.googleapis.com/auth/calendar.readonly'
-
-let googleIdentityScriptPromise = null
-let tokenClient = null
 
 function envValue(key){
   return import.meta?.env?.[key] || ''
@@ -11,80 +7,8 @@ function envValue(key){
 
 export function googleCalendarConfig(){
   return {
-    clientId: envValue('VITE_GOOGLE_CALENDAR_CLIENT_ID') || envValue('VITE_GOOGLE_CLIENT_ID') || '',
     daysAhead: Number(envValue('VITE_GOOGLE_CALENDAR_DAYS_AHEAD') || 90)
   }
-}
-
-export function hasGoogleCalendarConfig(){
-  return Boolean(googleCalendarConfig().clientId)
-}
-
-function ensureBrowser(){
-  if(typeof window === 'undefined' || typeof document === 'undefined'){
-    throw new Error('Google Kalender-import må kjøres i nettleseren.')
-  }
-}
-
-function loadGoogleIdentityScript(){
-  ensureBrowser()
-  if(window.google?.accounts?.oauth2) return Promise.resolve()
-  if(googleIdentityScriptPromise) return googleIdentityScriptPromise
-
-  googleIdentityScriptPromise = new Promise((resolve, reject) => {
-    const existing = document.querySelector(`script[src="${GIS_SRC}"]`)
-    if(existing){
-      existing.addEventListener('load', () => resolve(), { once: true })
-      existing.addEventListener('error', () => reject(new Error('Klarte ikke å laste Google Identity Services.')), { once: true })
-      return
-    }
-
-    const script = document.createElement('script')
-    script.src = GIS_SRC
-    script.async = true
-    script.defer = true
-    script.onload = () => resolve()
-    script.onerror = () => reject(new Error('Klarte ikke å laste Google Identity Services.'))
-    document.head.appendChild(script)
-  })
-
-  return googleIdentityScriptPromise
-}
-
-export async function requestGoogleCalendarToken({ prompt = 'consent' } = {}){
-  const { clientId } = googleCalendarConfig()
-  if(!clientId){
-    throw new Error('Mangler VITE_GOOGLE_CALENDAR_CLIENT_ID i miljøoppsettet.')
-  }
-  await loadGoogleIdentityScript()
-
-  return new Promise((resolve, reject) => {
-    tokenClient = window.google.accounts.oauth2.initTokenClient({
-      client_id: clientId,
-      scope: GOOGLE_CALENDAR_SCOPE,
-      prompt,
-      callback: response => {
-        if(response?.error){
-          reject(new Error(response.error_description || response.error))
-          return
-        }
-        if(!response?.access_token){
-          reject(new Error('Google svarte uten access token.'))
-          return
-        }
-        resolve(response.access_token)
-      },
-      error_callback: error => {
-        reject(new Error(error?.message || error?.type || 'Google-tilkoblingen ble avbrutt.'))
-      }
-    })
-
-    try{
-      tokenClient.requestAccessToken({ prompt })
-    }catch(error){
-      reject(error)
-    }
-  })
 }
 
 async function googleCalendarFetch(path, accessToken){

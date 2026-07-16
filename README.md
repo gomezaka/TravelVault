@@ -5,7 +5,7 @@ React/Vite-app for **familiens felles Travelvault**. Appen samler hverdag, famil
 Startskjermen er `Travelvault` og samler:
 
 - hjem-side med dagens/neste punkt, kommende avtaler, oppgaver og turer
-- kalender med manuelle avtaler og iCal/ICS-import; Google Calendar vises bare når OAuth client-ID er konfigurert
+- kalender med manuelle avtaler, iCal/ICS-import og Google Kalender via Google-innloggingen
 - felles `Må ordnes`-liste
 - felles handleliste
 - chat med generell tråd og hendelses-/plantråder
@@ -21,7 +21,7 @@ Denne versjonen er en oppryddings- og ferdigstillingsrunde etter familieomleggin
 - Endret tekst fra `Travelvault Family` til `Travelvault`, slik at familie, hverdag og reiser oppleves som én app.
 - Ryddet `Planer og reiser` slik at reisemodulen ligger under samme app, med tydelig vei tilbake til hjem.
 - Kalenderen starter ryddig uten automatisk å åpne skjema ved tom kalender.
-- Google Calendar-knapper vises bare når `VITE_GOOGLE_CALENDAR_CLIENT_ID` faktisk finnes. Uten client-ID vises ikke et halvferdig Google-oppsett.
+- Google Calendar bruker kalender-tokenet fra Supabase Google-innloggingen. Den gamle separate Google-popupflyten er fjernet.
 - Spond omtales og håndteres som iCal/ICS-import i denne versjonen, ikke som direkte Spond-API.
 - Fjernet kunstig oppstartsforsinkelse i test/lokalmodus.
 - PDF-leseren lastes nå først når en ekte PDF faktisk må leses. Rene tekst-/test-PDF-er leses uten tung PDF-worker.
@@ -57,7 +57,7 @@ npm install
 npm run dev
 ```
 
-Uten Supabase-variabler starter appen i lokal testmodus. Data lagres i nettleserens `localStorage`, slik at du kan teste familiehjem, handleliste, chat, kalender, oppgaver, familie og turer uten backend.
+Lokal testmodus må aktiveres eksplisitt med `VITE_ENABLE_AUTH=false`, og virker bare under lokal Vite-utvikling. Data lagres da i nettleserens `localStorage`. En produksjonsbuild uten Supabase-variabler åpner ikke appen uten innlogging.
 
 ## Tester og build
 
@@ -70,7 +70,7 @@ npm audit --audit-level=moderate
 Status for denne pakken:
 
 - `npm test`: passerer med 25/25 tester.
-- `npm run build`: passerer uten Vite chunk-advarselen fra tidligere. PDF-worker lastes dynamisk ved behov.
+- `npm run build`: passerer. Vite varsler fortsatt om at hovedpakken er over 500 kB; PDF-leseren og PDF-worker lastes dynamisk ved behov.
 - `npm audit --audit-level=moderate`: 0 sårbarheter.
 
 Testscriptet kjører røyk-testene med én Vitest-worker for stabilitet:
@@ -114,7 +114,7 @@ Hjem
 ├─ Kalender
 │  ├─ Manuelle avtaler
 │  ├─ iCal/ICS-import
-│  └─ Google Calendar read-only når client-ID er konfigurert
+│  └─ Google Calendar read-only via Google-innloggingen
 ├─ Må ordnes
 ├─ Handleliste
 ├─ Chat
@@ -237,14 +237,11 @@ Google Calendar-støtten ligger i `src/lib/googleCalendar.js` og bruker scope:
 https://www.googleapis.com/auth/calendar.readonly
 ```
 
-For å teste Google-import lokalt, legg dette i `.env.local`:
+Kalendertilgangen gis sammen med Google-innloggingen via Supabase Auth. Det kreves ingen separat `VITE_GOOGLE_CALENDAR_CLIENT_ID` i frontend. Antall dager frem i tid kan valgfritt styres med:
 
 ```env
-VITE_GOOGLE_CALENDAR_CLIENT_ID=DIN_GOOGLE_OAUTH_CLIENT_ID.apps.googleusercontent.com
 VITE_GOOGLE_CALENDAR_DAYS_AHEAD=90
 ```
-
-Dette skal være OAuth Client ID for en webapp. Ikke legg Google client secret i frontend. Når client-ID finnes, viser kalenderen `Koble Google`, kalender-valg og `Synkroniser` for å hente read-only hendelser inn i kalenderen.
 
 Google-hendelser lagres lokalt/Supabase-state som kalenderhendelser med `sourceType: 'google'`, `calendarId`, `calendarName`, `sourceKey` og eventuell ekstern lenke.
 
@@ -254,11 +251,11 @@ Google-hendelser lagres lokalt/Supabase-state som kalenderhendelser med `sourceT
 - Kort for kalender, `Må ordnes`, handleliste, chat, planer/reiser og familie
 - Felles handleliste med legg til, avkryssing, filter og sletting
 - Chat med trådvalg og meldinger i delt `household.messages`
-- Kalender med manuelle avtaler og `.ics`/iCal-import; Google Calendar read-only vises bare når client-ID er konfigurert
+- Kalender med manuelle avtaler, tidligere/kommende-filter, `.ics`/iCal-import og Google Calendar read-only via innloggingen
 - `Må ordnes` med frist, prioritet, person, notat, filter og ferdigmarkering
 - Pakkelister per tur, inkludert fellespunkter, personlige punkter, `må kjøpes`, pakket-status og sletting
 - Bro fra `må kjøpes` i pakkelister til felles handleliste
-- Eksisterende turmodul beholdt som `Planer og reiser`
+- Eksisterende turmodul beholdt som `Planer og reiser`; den enkle bildesimuleringen vises bare i lokal testmodus
 - Lokal testmodus uten innlogging
 - Opprette, åpne, bli med i, redigere og slette lokale turer
 - Separat lokalt innhold per tur
@@ -281,7 +278,7 @@ Google-hendelser lagres lokalt/Supabase-state som kalenderhendelser med `sourceT
 VITE_SUPABASE_URL=https://DIN-PROSJEKTREF.supabase.co
 VITE_SUPABASE_PUBLISHABLE_KEY=DIN_PUBLISHABLE_ELLER_ANON_PUBLIC_KEY
 VITE_ENABLE_AUTH=true
-VITE_ENABLE_GOOGLE_AUTH=false
+VITE_DISABLE_GOOGLE_AUTH=false
 ```
 
 2. I Supabase: Project Settings -> API. Kopier `Project URL` og publishable/anon public key.
@@ -309,10 +306,10 @@ VITE_ENABLE_GOOGLE_AUTH=false
 
 ## Google-innlogging via Supabase Auth
 
-Dette er separat fra Google Calendar-importen over. Google-knappen for innlogging slås på med:
+Google-knappen for innlogging og kalenderlesing slås på med:
 
 ```env
-VITE_ENABLE_GOOGLE_AUTH=true
+VITE_DISABLE_GOOGLE_AUTH=false
 ```
 
 I Supabase:
@@ -400,18 +397,19 @@ supabase/06_trip_edit_delete.sql
 
 ## Kjente begrensninger
 
-- Google Calendar-importen er frontend-utløst read-only import når client-ID er konfigurert; den er ikke bakgrunnssynk eller toveis kalenderredigering.
+- Google Calendar-importen er frontend-utløst read-only import via Google-innloggingen; den er ikke bakgrunnssynk eller toveis kalenderredigering.
 - Direkte Spond-API er ikke implementert.
 - Chat, handleliste, kalender og oppgaver bruker egne Supabase-tabeller først når `supabase/13_household_realtime.sql` er kjørt; ellers faller appen tilbake til `profiles.app_state`.
 - Ekte familieinvitasjoner krever at både `supabase/13_household_realtime.sql` og `supabase/14_household_invites.sql` er kjørt, og at Edge Function-secrets er satt.
 - Det finnes foreløpig ingen UI for å bytte mellom flere familiehjem dersom en bruker senere blir medlem i flere households.
+- Ekte bildeopplasting er ikke aktivert i produksjon ennå. Den gamle tekstbaserte bildesimuleringen er begrenset til lokal testmodus.
 - `.ics`-parseren dekker vanlige `VEVENT`-felt, men er ikke en komplett RFC 5545-parser.
 - `src/main.jsx` bør splittes i mindre moduler før appen vokser mer.
 
 ## Neste utviklingssteg
 
 1. Legg til household-velger for brukere som er med i flere familiehjem.
-2. Fullfør Google Calendar som egen kontrollert modul: refresh/ny tokenflyt, valgt kalender per familie, feillogging og bedre konflikthåndtering.
+2. Utvid Google Calendar med bakgrunnssynk, tokenfornyelse, feillogging og bedre konflikthåndtering.
 3. Legg til automatisk ukesoppsummering på familiehjemmet.
 4. Lag handlevare-kategorier og flere lister: `Hytte`, `Cup`, `Ferie`, `Apotek`.
 5. Legg til notifikasjoner for frister, kollisjoner og “må kjøpes”.
@@ -436,7 +434,7 @@ Environment variables for test/deploy uten auth:
 
 ```env
 VITE_ENABLE_AUTH=false
-VITE_ENABLE_GOOGLE_AUTH=false
+VITE_DISABLE_GOOGLE_AUTH=true
 ```
 
 Environment variables for Supabase-auth:
@@ -445,5 +443,5 @@ Environment variables for Supabase-auth:
 VITE_SUPABASE_URL=...
 VITE_SUPABASE_PUBLISHABLE_KEY=...
 VITE_ENABLE_AUTH=true
-VITE_ENABLE_GOOGLE_AUTH=false
+VITE_DISABLE_GOOGLE_AUTH=false
 ```
